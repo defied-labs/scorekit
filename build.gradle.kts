@@ -23,6 +23,9 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testImplementation("redis.clients:jedis:8.0.2")
     testImplementation("org.testcontainers:testcontainers-junit-jupiter:2.0.5")
+    testImplementation("org.testcontainers:testcontainers-postgresql:2.0.5")
+    testImplementation("org.postgresql:postgresql:42.7.14")
+    testImplementation("com.zaxxer:HikariCP:7.1.0")
 }
 
 tasks.test {
