@@ -2,6 +2,7 @@ package dev.defied.scorekit.storage.jdbc;
 
 import dev.defied.scorekit.storage.LeaderboardId;
 import dev.defied.scorekit.storage.LeaderboardStorage;
+import dev.defied.scorekit.storage.ScanPage;
 import dev.defied.scorekit.storage.StorageException;
 import dev.defied.scorekit.storage.StoredEntry;
 
@@ -29,6 +30,9 @@ final class JdbcStorage<S> implements LeaderboardStorage<S> {
     private final String top;
     private final String delete;
     private final String count;
+    private final String scanFirst;
+    private final String scanNext;
+    private final String clear;
 
     JdbcStorage(DataSource dataSource, LeaderboardId id, ScoreColumn<S> column) {
         this.dataSource = dataSource;
@@ -46,6 +50,9 @@ final class JdbcStorage<S> implements LeaderboardStorage<S> {
         top = "SELECT entry_key, score FROM " + table + scope + " ORDER BY score DESC, entry_key DESC";
         delete = "DELETE FROM " + table + entry;
         count = "SELECT COUNT(*) FROM " + table + scope;
+        scanFirst = "SELECT entry_key, score FROM " + table + scope + " ORDER BY entry_key";
+        scanNext = "SELECT entry_key, score FROM " + table + scope + " AND entry_key > ? ORDER BY entry_key";
+        clear = "DELETE FROM " + table + scope;
     }
 
     @Override
@@ -91,9 +98,28 @@ final class JdbcStorage<S> implements LeaderboardStorage<S> {
         if (n == 0) {
             return List.of();
         }
+        return entries(top, null, n);
+    }
+
+    @Override
+    public ScanPage<S> scan(String cursor, int count) {
+        List<StoredEntry<S>> entries = cursor == null ? entries(scanFirst, null, count) : entries(scanNext, cursor, count);
+        return new ScanPage<>(entries, entries.isEmpty() || entries.size() < count ? null : entries.getLast().key());
+    }
+
+    @Override
+    public void clear() {
+        execute(connection -> {
+            try (PreparedStatement statement = scoped(connection, clear, null)) {
+                return statement.executeUpdate();
+            }
+        });
+    }
+
+    private List<StoredEntry<S>> entries(String sql, String key, int limit) {
         return execute(connection -> {
-            try (PreparedStatement statement = scoped(connection, top, null)) {
-                statement.setMaxRows(n);
+            try (PreparedStatement statement = scoped(connection, sql, key)) {
+                statement.setMaxRows(limit);
                 try (ResultSet result = statement.executeQuery()) {
                     List<StoredEntry<S>> entries = new ArrayList<>();
                     while (result.next()) {

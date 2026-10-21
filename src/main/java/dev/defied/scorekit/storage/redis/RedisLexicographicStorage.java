@@ -1,10 +1,14 @@
 package dev.defied.scorekit.storage.redis;
 
 import dev.defied.scorekit.storage.LeaderboardStorage;
+import dev.defied.scorekit.storage.ScanPage;
 import dev.defied.scorekit.storage.StoredEntry;
 import redis.clients.jedis.UnifiedJedis;
+import redis.clients.jedis.params.ScanParams;
+import redis.clients.jedis.resps.ScanResult;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 
@@ -83,6 +87,20 @@ final class RedisLexicographicStorage implements LeaderboardStorage<String> {
     @Override
     public long size() {
         return jedis.hlen(scoresKey);
+    }
+
+    @Override
+    public ScanPage<String> scan(String cursor, int count) {
+        ScanResult<Map.Entry<String, String>> result = jedis.hscan(scoresKey, cursor == null ? ScanParams.SCAN_POINTER_START : cursor, new ScanParams().count(count));
+        List<StoredEntry<String>> entries = result.getResult().stream()
+                .map(entry -> new StoredEntry<>(entry.getKey(), entry.getValue()))
+                .toList();
+        return new ScanPage<>(entries, result.isCompleteIteration() ? null : result.getCursor());
+    }
+
+    @Override
+    public void clear() {
+        jedis.unlink(rankingKey, scoresKey);
     }
 
     private static StoredEntry<String> entry(String member) {

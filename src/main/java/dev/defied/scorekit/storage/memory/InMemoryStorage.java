@@ -2,15 +2,16 @@ package dev.defied.scorekit.storage.memory;
 
 import dev.defied.scorekit.codec.ScoreType;
 import dev.defied.scorekit.storage.LeaderboardStorage;
+import dev.defied.scorekit.storage.ScanPage;
 import dev.defied.scorekit.storage.StoredEntry;
 
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
+import java.util.NavigableMap;
 import java.util.NavigableSet;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
@@ -18,7 +19,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public final class InMemoryStorage<S> implements LeaderboardStorage<S> {
 
-    private final Map<String, S> scores = new HashMap<>();
+    private final NavigableMap<String, S> scores = new TreeMap<>(ScoreType.LEXICOGRAPHIC.order());
     private final NavigableSet<StoredEntry<S>> ranking;
     private final Lock readLock;
     private final Lock writeLock;
@@ -102,6 +103,32 @@ public final class InMemoryStorage<S> implements LeaderboardStorage<S> {
             return scores.size();
         } finally {
             readLock.unlock();
+        }
+    }
+
+    @Override
+    public ScanPage<S> scan(String cursor, int count) {
+        readLock.lock();
+        try {
+            NavigableMap<String, S> remaining = cursor == null ? scores : scores.tailMap(cursor, false);
+            List<StoredEntry<S>> entries = remaining.entrySet().stream()
+                    .limit(count)
+                    .map(entry -> new StoredEntry<>(entry.getKey(), entry.getValue()))
+                    .toList();
+            return new ScanPage<>(entries, entries.isEmpty() || entries.size() < count ? null : entries.getLast().key());
+        } finally {
+            readLock.unlock();
+        }
+    }
+
+    @Override
+    public void clear() {
+        writeLock.lock();
+        try {
+            scores.clear();
+            ranking.clear();
+        } finally {
+            writeLock.unlock();
         }
     }
 }

@@ -1,8 +1,12 @@
 package dev.defied.scorekit.storage.redis;
 
 import dev.defied.scorekit.storage.LeaderboardStorage;
+import dev.defied.scorekit.storage.ScanPage;
 import dev.defied.scorekit.storage.StoredEntry;
 import redis.clients.jedis.UnifiedJedis;
+import redis.clients.jedis.params.ScanParams;
+import redis.clients.jedis.resps.ScanResult;
+import redis.clients.jedis.resps.Tuple;
 
 import java.util.List;
 import java.util.Optional;
@@ -52,5 +56,19 @@ final class RedisNumericStorage implements LeaderboardStorage<Double> {
     @Override
     public long size() {
         return jedis.zcard(rankingKey);
+    }
+
+    @Override
+    public ScanPage<Double> scan(String cursor, int count) {
+        ScanResult<Tuple> result = jedis.zscan(rankingKey, cursor == null ? ScanParams.SCAN_POINTER_START : cursor, new ScanParams().count(count));
+        List<StoredEntry<Double>> entries = result.getResult().stream()
+                .map(tuple -> new StoredEntry<>(tuple.getElement(), tuple.getScore()))
+                .toList();
+        return new ScanPage<>(entries, result.isCompleteIteration() ? null : result.getCursor());
+    }
+
+    @Override
+    public void clear() {
+        jedis.unlink(rankingKey);
     }
 }

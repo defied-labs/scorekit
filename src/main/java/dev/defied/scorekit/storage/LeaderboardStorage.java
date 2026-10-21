@@ -17,4 +17,8 @@ public interface LeaderboardStorage<S> {
     boolean remove(String key);
 
     long size();
+
+    ScanPage<S> scan(String cursor, int count);
+
+    void clear();
 }
