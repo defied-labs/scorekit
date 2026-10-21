@@ -10,15 +10,15 @@ final class RedisCacheState implements CacheState {
 
     private static final String LEASE_MILLIS = "30000";
 
-    private static final String MARK_DIRTY = """
+    private static final RedisScript MARK_DIRTY = new RedisScript("""
             if redis.call('HEXISTS', KEYS[1], 'warm') == 1 then
                 return 0
             end
             redis.call('SADD', KEYS[2], ARGV[1])
             return 1
-            """;
+            """);
 
-    private static final String BEGIN = """
+    private static final RedisScript BEGIN = new RedisScript("""
             if redis.call('HEXISTS', KEYS[1], 'warm') == 1 then
                 return false
             end
@@ -29,17 +29,17 @@ final class RedisCacheState implements CacheState {
             redis.call('HSET', KEYS[1], 'epoch', epoch)
             redis.call('DEL', KEYS[2])
             return tonumber(epoch)
-            """;
+            """);
 
-    private static final String RENEW = """
+    private static final RedisScript RENEW = new RedisScript("""
             if redis.call('HGET', KEYS[1], 'epoch') ~= ARGV[1] or redis.call('GET', KEYS[3]) ~= ARGV[1] then
                 return 0
             end
             redis.call('PEXPIRE', KEYS[3], ARGV[2])
             return 1
-            """;
+            """);
 
-    private static final String COMPLETE = """
+    private static final RedisScript COMPLETE = new RedisScript("""
             if redis.call('HGET', KEYS[1], 'epoch') ~= ARGV[1] or redis.call('GET', KEYS[3]) ~= ARGV[1] then
                 return 0
             end
@@ -49,20 +49,20 @@ final class RedisCacheState implements CacheState {
             redis.call('HSET', KEYS[1], 'warm', '1')
             redis.call('DEL', KEYS[3])
             return 1
-            """;
+            """);
 
-    private static final String ABORT = """
+    private static final RedisScript ABORT = new RedisScript("""
             if redis.call('GET', KEYS[3]) == ARGV[1] then
                 redis.call('DEL', KEYS[3])
             end
             return 0
-            """;
+            """);
 
-    private static final String INVALIDATE = """
+    private static final RedisScript INVALIDATE = new RedisScript("""
             redis.call('HDEL', KEYS[1], 'warm')
             redis.call('HINCRBY', KEYS[1], 'epoch', 1)
             return 0
-            """;
+            """);
 
     private final UnifiedJedis jedis;
     private final String stateKey;
@@ -88,7 +88,7 @@ final class RedisCacheState implements CacheState {
 
     @Override
     public OptionalLong beginWarmUp() {
-        Long epoch = (Long) jedis.eval(BEGIN, keys, List.of(LEASE_MILLIS));
+        Long epoch = (Long) BEGIN.eval(jedis, keys, List.of(LEASE_MILLIS));
         return epoch == null ? OptionalLong.empty() : OptionalLong.of(epoch);
     }
 
@@ -114,10 +114,10 @@ final class RedisCacheState implements CacheState {
 
     @Override
     public void invalidate() {
-        jedis.eval(INVALIDATE, keys, List.of());
+        INVALIDATE.eval(jedis, keys, List.of());
     }
 
-    private boolean eval(String script, String... args) {
-        return (Long) jedis.eval(script, keys, List.of(args)) == 1;
+    private boolean eval(RedisScript script, String... args) {
+        return (Long) script.eval(jedis, keys, List.of(args)) == 1;
     }
 }

@@ -14,24 +14,24 @@ import java.util.OptionalLong;
 
 final class RedisLexicographicStorage implements LeaderboardStorage<String> {
 
-    private static final String PUT = """
+    private static final RedisScript PUT = new RedisScript("""
             local previous = redis.call('HGET', KEYS[2], ARGV[1])
             if previous then
                 redis.call('ZREM', KEYS[1], previous .. '\\0' .. ARGV[1])
             end
             redis.call('ZADD', KEYS[1], 0, ARGV[2] .. '\\0' .. ARGV[1])
             redis.call('HSET', KEYS[2], ARGV[1], ARGV[2])
-            """;
+            """);
 
-    private static final String RANK = """
+    private static final RedisScript RANK = new RedisScript("""
             local score = redis.call('HGET', KEYS[2], ARGV[1])
             if not score then
                 return false
             end
             return redis.call('ZREVRANK', KEYS[1], score .. '\\0' .. ARGV[1])
-            """;
+            """);
 
-    private static final String REMOVE = """
+    private static final RedisScript REMOVE = new RedisScript("""
             local score = redis.call('HGET', KEYS[2], ARGV[1])
             if not score then
                 return 0
@@ -39,7 +39,7 @@ final class RedisLexicographicStorage implements LeaderboardStorage<String> {
             redis.call('ZREM', KEYS[1], score .. '\\0' .. ARGV[1])
             redis.call('HDEL', KEYS[2], ARGV[1])
             return 1
-            """;
+            """);
 
     private final UnifiedJedis jedis;
     private final String rankingKey;
@@ -55,7 +55,7 @@ final class RedisLexicographicStorage implements LeaderboardStorage<String> {
 
     @Override
     public void put(String key, String score) {
-        jedis.eval(PUT, keys, List.of(key, score));
+        PUT.eval(jedis, keys, List.of(key, score));
     }
 
     @Override
@@ -65,7 +65,7 @@ final class RedisLexicographicStorage implements LeaderboardStorage<String> {
 
     @Override
     public OptionalLong rank(String key) {
-        Long rank = (Long) jedis.eval(RANK, keys, List.of(key));
+        Long rank = (Long) RANK.eval(jedis, keys, List.of(key));
         return rank == null ? OptionalLong.empty() : OptionalLong.of(rank + 1);
     }
 
@@ -81,7 +81,7 @@ final class RedisLexicographicStorage implements LeaderboardStorage<String> {
 
     @Override
     public boolean remove(String key) {
-        return (Long) jedis.eval(REMOVE, keys, List.of(key)) > 0;
+        return (Long) REMOVE.eval(jedis, keys, List.of(key)) > 0;
     }
 
     @Override
