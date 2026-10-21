@@ -22,6 +22,8 @@ import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -30,7 +32,6 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 
 @Testcontainers
 class RedisJdbcCachedStorageTest extends LeaderboardStorageContract {
@@ -76,12 +77,13 @@ class RedisJdbcCachedStorageTest extends LeaderboardStorageContract {
     }
 
     @Test
-    void cacheConvergesWithDatabaseUnderConcurrentWrites() throws InterruptedException {
+    void cacheConvergesWithDatabaseUnderConcurrentWritersFromSeveralInstances() throws InterruptedException {
         LeaderboardId id = new LeaderboardId("test", UUID.randomUUID().toString());
-        LeaderboardStorage<Double> cached = factory.create(id, ScoreType.NUMERIC);
-        CacheState state = redisFactory.cacheState(id);
+        List<LeaderboardStorage<Double>> instances = List.of(
+                factory.create(id, ScoreType.NUMERIC),
+                new CachedStorageFactory(new RedisStorageFactory(jedis), new JdbcStorageFactory(dataSource)).create(id, ScoreType.NUMERIC));
         for (int i = 0; i < 1_200; i++) {
-            cached.put("seed" + i, (double) i);
+            instances.getFirst().put("seed" + i, (double) i);
         }
 
         ExecutorService executor = Executors.newFixedThreadPool(6);
@@ -89,11 +91,12 @@ class RedisJdbcCachedStorageTest extends LeaderboardStorageContract {
             executor.execute(() -> {
                 ThreadLocalRandom random = ThreadLocalRandom.current();
                 for (int i = 0; i < 400; i++) {
-                    String key = (random.nextBoolean() ? "seed" : "k") + random.nextInt(100);
+                    LeaderboardStorage<Double> instance = instances.get(random.nextInt(instances.size()));
+                    String key = (random.nextBoolean() ? "seed" : "k") + random.nextInt(30);
                     switch (random.nextInt(3)) {
-                        case 0 -> cached.remove(key);
-                        case 1 -> cached.put(key, (double) random.nextInt(1_000));
-                        default -> cached.top(5);
+                        case 0 -> instance.remove(key);
+                        case 1 -> instance.put(key, (double) random.nextInt(1_000));
+                        default -> instance.top(5);
                     }
                 }
             });
@@ -101,15 +104,24 @@ class RedisJdbcCachedStorageTest extends LeaderboardStorageContract {
         executor.shutdown();
         assertTrue(executor.awaitTermination(60, TimeUnit.SECONDS));
 
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
-        while (!state.isWarm()) {
-            if (System.nanoTime() > deadline) {
-                fail("Cache did not warm up");
-            }
-            cached.size();
-            Thread.sleep(20);
-        }
-        assertEquals(jdbcFactory.create(id, ScoreType.NUMERIC).top(Integer.MAX_VALUE),
-                redisFactory.create(id, ScoreType.NUMERIC).top(Integer.MAX_VALUE));
+        CacheStorage<Double> cache = redisFactory.createCache(id, ScoreType.NUMERIC);
+        CachedStorageTest.awaitWarm(instances.getFirst(), cache.state());
+        assertEquals(jdbcFactory.create(id, ScoreType.NUMERIC).top(Integer.MAX_VALUE), cache.top(Integer.MAX_VALUE));
+    }
+
+    @Test
+    void sweepRepairsWritesThatNeverReachedRedis() {
+        LeaderboardId id = new LeaderboardId("test", UUID.randomUUID().toString());
+        CachedStorage<Double> cached = (CachedStorage<Double>) factory.create(id, ScoreType.NUMERIC);
+        cached.put("gone", 1.0);
+        cached.warmUp();
+
+        jdbcFactory.create(id, ScoreType.NUMERIC).put("lost", 7.0);
+        jdbcFactory.create(id, ScoreType.NUMERIC).remove("gone");
+        cached.sweep();
+
+        CacheStorage<Double> cache = redisFactory.createCache(id, ScoreType.NUMERIC);
+        assertEquals(Optional.of(7.0), cache.score("lost"));
+        assertEquals(Optional.empty(), cache.score("gone"));
     }
 }

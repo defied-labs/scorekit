@@ -4,7 +4,8 @@ import com.zaxxer.hikari.HikariDataSource;
 import dev.defied.scorekit.codec.ScoreType;
 import dev.defied.scorekit.storage.LeaderboardId;
 import dev.defied.scorekit.storage.LeaderboardStorage;
-import dev.defied.scorekit.storage.LeaderboardStorageContract;
+import dev.defied.scorekit.storage.VersionedStorage;
+import dev.defied.scorekit.storage.VersionedStorageContract;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -24,7 +25,7 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 @Testcontainers
-class JdbcStorageTest extends LeaderboardStorageContract {
+class JdbcStorageTest extends VersionedStorageContract {
 
     @Container
     static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17-alpine");
@@ -52,7 +53,7 @@ class JdbcStorageTest extends LeaderboardStorageContract {
     }
 
     @Override
-    protected <S> LeaderboardStorage<S> create(ScoreType<S> type) {
+    protected <S> VersionedStorage<S> create(ScoreType<S> type) {
         return factory.create(new LeaderboardId("test", UUID.randomUUID().toString()), type);
     }
 

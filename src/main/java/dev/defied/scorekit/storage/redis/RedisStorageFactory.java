@@ -3,13 +3,14 @@ package dev.defied.scorekit.storage.redis;
 import dev.defied.scorekit.codec.ScoreType;
 import dev.defied.scorekit.storage.LeaderboardId;
 import dev.defied.scorekit.storage.LeaderboardStorage;
-import dev.defied.scorekit.storage.cache.CacheState;
+import dev.defied.scorekit.storage.StorageFactory;
+import dev.defied.scorekit.storage.cache.CacheStorage;
 import dev.defied.scorekit.storage.cache.CacheStorageFactory;
 import redis.clients.jedis.UnifiedJedis;
 
 import java.util.Objects;
 
-public final class RedisStorageFactory implements CacheStorageFactory {
+public final class RedisStorageFactory implements StorageFactory, CacheStorageFactory {
 
     private final UnifiedJedis jedis;
 
@@ -28,9 +29,14 @@ public final class RedisStorageFactory implements CacheStorageFactory {
     }
 
     @Override
-    public CacheState cacheState(LeaderboardId id) {
-        String prefix = prefix(id);
-        return new RedisCacheState(jedis, prefix + "cache-state", prefix + "cache-dirty", prefix + "cache-lock");
+    @SuppressWarnings("unchecked")
+    public <S> CacheStorage<S> createCache(LeaderboardId id, ScoreType<S> type) {
+        String prefix = prefix(id) + "cache:";
+        RedisCacheState state = new RedisCacheState(jedis, prefix + "state", prefix + "lock", prefix + "sweep");
+        if (type == ScoreType.NUMERIC) {
+            return (CacheStorage<S>) new RedisNumericCache(jedis, prefix, state);
+        }
+        return (CacheStorage<S>) new RedisLexicographicCache(jedis, prefix, state);
     }
 
     private static String prefix(LeaderboardId id) {

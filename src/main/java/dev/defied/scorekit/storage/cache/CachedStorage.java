@@ -3,49 +3,43 @@ package dev.defied.scorekit.storage.cache;
 import dev.defied.scorekit.storage.LeaderboardStorage;
 import dev.defied.scorekit.storage.ScanPage;
 import dev.defied.scorekit.storage.StoredEntry;
+import dev.defied.scorekit.storage.VersionedStorage;
 
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 
 import static java.lang.System.Logger.Level.WARNING;
 
 final class CachedStorage<S> implements LeaderboardStorage<S> {
 
+    static final long SWEEP_INTERVAL_MILLIS = 10_000;
+
     private static final int BATCH = 500;
-    private static final int LOCK_STRIPES = 64;
+    private static final long SWEEP_MARGIN_MICROS = 20_000_000;
+    private static final long TOMBSTONE_RETENTION_MICROS = 3_600_000_000L;
+    private static final long UNAVAILABLE_BACKOFF_MILLIS = 5_000;
     private static final System.Logger LOGGER = System.getLogger(CachedStorage.class.getName());
 
-    private final LeaderboardStorage<S> primary;
-    private final LeaderboardStorage<S> cache;
+    private final VersionedStorage<S> primary;
+    private final CacheStorage<S> cache;
     private final CacheState state;
-    private final Lock[] locks = new Lock[LOCK_STRIPES];
     private final AtomicBoolean warming = new AtomicBoolean();
-    private final AtomicBoolean invalidationPending = new AtomicBoolean();
+    private final AtomicBoolean sweeping = new AtomicBoolean();
+    private volatile long unavailableUntil;
 
-    CachedStorage(LeaderboardStorage<S> primary, LeaderboardStorage<S> cache, CacheState state) {
+    CachedStorage(VersionedStorage<S> primary, CacheStorage<S> cache) {
         this.primary = primary;
         this.cache = cache;
-        this.state = state;
-        for (int i = 0; i < LOCK_STRIPES; i++) {
-            locks[i] = new ReentrantLock();
-        }
+        this.state = cache.state();
     }
 
     @Override
     public void put(String key, S score) {
-        Lock lock = lock(key);
-        lock.lock();
-        try {
-            primary.put(key, score);
-            afterWrite(key, () -> cache.put(key, score));
-        } finally {
-            lock.unlock();
-        }
+        long version = primary.putVersioned(key, score);
+        writeCache(() -> cache.putIfNewer(key, score, version));
     }
 
     @Override
@@ -65,31 +59,14 @@ final class CachedStorage<S> implements LeaderboardStorage<S> {
 
     @Override
     public boolean remove(String key) {
-        Lock lock = lock(key);
-        lock.lock();
-        try {
-            boolean removed = primary.remove(key);
-            afterWrite(key, () -> cache.remove(key));
-            return removed;
-        } finally {
-            lock.unlock();
-        }
+        OptionalLong version = primary.removeVersioned(key);
+        version.ifPresent(removed -> writeCache(() -> cache.removeIfNewer(key, removed)));
+        return version.isPresent();
     }
 
     @Override
     public long size() {
         return read(cache::size, primary::size);
-    }
-
-    @Override
-    public ScanPage<S> scan(String cursor, int count) {
-        return primary.scan(cursor, count);
-    }
-
-    @Override
-    public void clear() {
-        primary.clear();
-        invalidate();
     }
 
     void warmUp() {
@@ -98,26 +75,20 @@ final class CachedStorage<S> implements LeaderboardStorage<S> {
             return;
         }
         long epoch = begun.getAsLong();
+        long watermark = VersionedStorage.now() - SWEEP_MARGIN_MICROS;
         boolean completed = false;
         try {
             cache.clear();
             String cursor = null;
             do {
                 ScanPage<S> page = primary.scan(cursor, BATCH);
-                page.entries().forEach(entry -> cache.put(entry.key(), entry.score()));
+                cache.applyAll(page.entries());
                 if (!state.renewWarmUp(epoch)) {
                     return;
                 }
                 cursor = page.next();
             } while (cursor != null);
-            while (state.renewWarmUp(epoch)) {
-                List<String> dirty = state.pollDirty(BATCH);
-                dirty.forEach(this::refresh);
-                if (dirty.isEmpty() && state.completeWarmUp(epoch)) {
-                    completed = true;
-                    return;
-                }
-            }
+            completed = state.completeWarmUp(epoch, watermark);
         } finally {
             if (!completed) {
                 state.abortWarmUp(epoch);
@@ -125,71 +96,71 @@ final class CachedStorage<S> implements LeaderboardStorage<S> {
         }
     }
 
-    private void refresh(String key) {
-        primary.score(key).ifPresentOrElse(score -> cache.put(key, score), () -> cache.remove(key));
+    void sweep() {
+        OptionalLong watermark = state.tryStartSweep(SWEEP_INTERVAL_MILLIS);
+        if (watermark.isEmpty()) {
+            return;
+        }
+        long next = VersionedStorage.now() - SWEEP_MARGIN_MICROS;
+        String cursor = null;
+        do {
+            ScanPage<S> page = primary.scanChanges(watermark.getAsLong(), cursor, BATCH);
+            cache.applyAll(page.entries());
+            cursor = page.next();
+        } while (cursor != null);
+        primary.purgeRemoved(VersionedStorage.now() - TOMBSTONE_RETENTION_MICROS);
+        state.completeSweep(next);
     }
 
-    private void afterWrite(String key, Runnable cacheWrite) {
+    void sweepInBackground() {
+        inBackground(sweeping, "scorekit-cache-sweep", this::sweep);
+    }
+
+    private void writeCache(Runnable write) {
+        if (unavailable()) {
+            return;
+        }
         try {
-            flushInvalidation();
-            if (!state.markDirtyUnlessWarm(key)) {
-                cacheWrite.run();
-            }
+            write.run();
         } catch (RuntimeException e) {
-            LOGGER.log(WARNING, "Cache write failed, invalidating cached leaderboard", e);
-            invalidate();
+            markUnavailable("Cache write failed, the next sweep will repair it", e);
         }
     }
 
     private <T> T read(Supplier<T> fromCache, Supplier<T> fromPrimary) {
-        try {
-            flushInvalidation();
-            if (state.isWarm()) {
+        if (!unavailable()) {
+            try {
                 return fromCache.get();
+            } catch (CacheColdException e) {
+                inBackground(warming, "scorekit-cache-warm-up", this::warmUp);
+            } catch (RuntimeException e) {
+                markUnavailable("Cache read failed, reading from primary storage", e);
             }
-            warmUpInBackground();
-        } catch (RuntimeException e) {
-            LOGGER.log(WARNING, "Cache read failed, reading from primary storage", e);
         }
         return fromPrimary.get();
     }
 
-    private void warmUpInBackground() {
-        if (!warming.compareAndSet(false, true)) {
+    private boolean unavailable() {
+        return System.currentTimeMillis() < unavailableUntil;
+    }
+
+    private void markUnavailable(String message, RuntimeException e) {
+        unavailableUntil = System.currentTimeMillis() + UNAVAILABLE_BACKOFF_MILLIS;
+        LOGGER.log(WARNING, message, e);
+    }
+
+    private static void inBackground(AtomicBoolean running, String name, Runnable task) {
+        if (!running.compareAndSet(false, true)) {
             return;
         }
-        Thread.ofVirtual().name("scorekit-cache-warm-up").start(() -> {
+        Thread.ofVirtual().name(name).start(() -> {
             try {
-                warmUp();
+                task.run();
             } catch (RuntimeException e) {
-                LOGGER.log(WARNING, "Cache warm-up failed", e);
+                LOGGER.log(WARNING, name + " failed", e);
             } finally {
-                warming.set(false);
+                running.set(false);
             }
         });
-    }
-
-    private void invalidate() {
-        invalidationPending.set(true);
-        try {
-            flushInvalidation();
-        } catch (RuntimeException e) {
-            LOGGER.log(WARNING, "Cache invalidation failed, retrying on next operation", e);
-        }
-    }
-
-    private void flushInvalidation() {
-        if (invalidationPending.compareAndSet(true, false)) {
-            try {
-                state.invalidate();
-            } catch (RuntimeException e) {
-                invalidationPending.set(true);
-                throw e;
-            }
-        }
-    }
-
-    private Lock lock(String key) {
-        return locks[Math.floorMod(key.hashCode(), LOCK_STRIPES)];
     }
 }

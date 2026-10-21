@@ -1,5 +1,6 @@
 package dev.defied.scorekit.storage.redis;
 
+import dev.defied.scorekit.codec.ScoreType;
 import dev.defied.scorekit.storage.LeaderboardId;
 import dev.defied.scorekit.storage.cache.CacheState;
 import dev.defied.scorekit.storage.cache.CacheStateContract;
@@ -37,16 +38,20 @@ class RedisCacheStateTest extends CacheStateContract {
 
     @Override
     protected CacheState create() {
-        return factory.cacheState(new LeaderboardId("test", UUID.randomUUID().toString()));
+        return state(new LeaderboardId("test", UUID.randomUUID().toString()));
     }
 
     @Test
     void stateIsSharedBetweenInstances() {
         LeaderboardId id = new LeaderboardId("test", UUID.randomUUID().toString());
-        CacheState first = factory.cacheState(id);
+        CacheState first = state(id);
         long epoch = first.beginWarmUp().orElseThrow();
-        first.completeWarmUp(epoch);
+        first.completeWarmUp(epoch, 0);
 
-        assertTrue(new RedisStorageFactory(jedis).cacheState(id).isWarm());
+        assertTrue(state(id).isWarm());
+    }
+
+    private static CacheState state(LeaderboardId id) {
+        return factory.createCache(id, ScoreType.NUMERIC).state();
     }
 }

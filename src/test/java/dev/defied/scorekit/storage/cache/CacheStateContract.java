@@ -3,7 +3,6 @@ package dev.defied.scorekit.storage.cache;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
 import java.util.OptionalLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -22,32 +21,20 @@ public abstract class CacheStateContract {
     }
 
     @Test
-    void newStateIsColdAndRecordsDirtyKeys() {
+    void newStateIsCold() {
         assertFalse(state.isWarm());
-        assertTrue(state.markDirtyUnlessWarm("a"));
+        assertEquals(OptionalLong.empty(), state.tryStartSweep(60_000));
     }
 
     @Test
-    void warmUpCompletesOnlyWhenNoKeysAreDirty() {
+    void completedWarmUpMakesStateWarm() {
         long epoch = state.beginWarmUp().orElseThrow();
-        assertTrue(state.markDirtyUnlessWarm("a"));
+        assertTrue(state.renewWarmUp(epoch));
 
-        assertFalse(state.completeWarmUp(epoch));
-        assertEquals(List.of("a"), state.pollDirty(10));
-        assertTrue(state.completeWarmUp(epoch));
+        assertTrue(state.completeWarmUp(epoch, 42));
 
         assertTrue(state.isWarm());
-        assertFalse(state.markDirtyUnlessWarm("b"));
         assertEquals(OptionalLong.empty(), state.beginWarmUp());
-    }
-
-    @Test
-    void beginWarmUpDiscardsEarlierDirtyKeys() {
-        state.markDirtyUnlessWarm("a");
-
-        state.beginWarmUp().orElseThrow();
-
-        assertEquals(List.of(), state.pollDirty(10));
     }
 
     @Test
@@ -60,30 +47,28 @@ public abstract class CacheStateContract {
         long second = state.beginWarmUp().orElseThrow();
         assertTrue(second > first);
         assertFalse(state.renewWarmUp(first));
+        assertFalse(state.completeWarmUp(first, 42));
         assertTrue(state.renewWarmUp(second));
     }
 
     @Test
-    void invalidateFencesRunningWarmUp() {
+    void sweepStartsFromWarmUpWatermarkOncePerInterval() {
         long epoch = state.beginWarmUp().orElseThrow();
+        state.completeWarmUp(epoch, 42);
 
-        state.invalidate();
-
-        assertFalse(state.renewWarmUp(epoch));
-        assertFalse(state.completeWarmUp(epoch));
-        assertFalse(state.isWarm());
-        state.abortWarmUp(epoch);
-        assertTrue(state.beginWarmUp().isPresent());
+        assertEquals(OptionalLong.of(42), state.tryStartSweep(60_000));
+        assertEquals(OptionalLong.empty(), state.tryStartSweep(60_000));
     }
 
     @Test
-    void invalidateMakesWarmStateCold() {
+    void completedSweepAdvancesWatermark() throws InterruptedException {
         long epoch = state.beginWarmUp().orElseThrow();
-        state.completeWarmUp(epoch);
+        state.completeWarmUp(epoch, 42);
+        state.tryStartSweep(1).orElseThrow();
 
-        state.invalidate();
+        state.completeSweep(99);
+        Thread.sleep(5);
 
-        assertFalse(state.isWarm());
-        assertTrue(state.markDirtyUnlessWarm("a"));
+        assertEquals(OptionalLong.of(99), state.tryStartSweep(1));
     }
 }

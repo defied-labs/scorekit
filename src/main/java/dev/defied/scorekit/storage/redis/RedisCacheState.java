@@ -10,80 +10,71 @@ final class RedisCacheState implements CacheState {
 
     private static final String LEASE_MILLIS = "30000";
 
-    private static final RedisScript MARK_DIRTY = new RedisScript("""
-            if redis.call('HEXISTS', KEYS[1], 'warm') == 1 then
-                return 0
-            end
-            redis.call('SADD', KEYS[2], ARGV[1])
-            return 1
-            """);
-
     private static final RedisScript BEGIN = new RedisScript("""
             if redis.call('HEXISTS', KEYS[1], 'warm') == 1 then
                 return false
             end
-            local epoch = tostring(redis.call('HINCRBY', KEYS[1], 'epoch', 0) + 1)
-            if not redis.call('SET', KEYS[3], epoch, 'NX', 'PX', ARGV[1]) then
+            local epoch = tostring(redis.call('HINCRBY', KEYS[1], 'epoch', 1))
+            if not redis.call('SET', KEYS[2], epoch, 'NX', 'PX', ARGV[1]) then
                 return false
             end
-            redis.call('HSET', KEYS[1], 'epoch', epoch)
-            redis.call('DEL', KEYS[2])
             return tonumber(epoch)
             """);
 
     private static final RedisScript RENEW = new RedisScript("""
-            if redis.call('HGET', KEYS[1], 'epoch') ~= ARGV[1] or redis.call('GET', KEYS[3]) ~= ARGV[1] then
+            if redis.call('GET', KEYS[2]) ~= ARGV[1] then
                 return 0
             end
-            redis.call('PEXPIRE', KEYS[3], ARGV[2])
+            redis.call('PEXPIRE', KEYS[2], ARGV[2])
             return 1
             """);
 
     private static final RedisScript COMPLETE = new RedisScript("""
-            if redis.call('HGET', KEYS[1], 'epoch') ~= ARGV[1] or redis.call('GET', KEYS[3]) ~= ARGV[1] then
+            if redis.call('GET', KEYS[2]) ~= ARGV[1] then
                 return 0
             end
-            if redis.call('SCARD', KEYS[2]) > 0 then
-                return 0
-            end
-            redis.call('HSET', KEYS[1], 'warm', '1')
-            redis.call('DEL', KEYS[3])
+            redis.call('HSET', KEYS[1], 'warm', '1', 'swept', ARGV[2])
+            redis.call('DEL', KEYS[2])
             return 1
             """);
 
     private static final RedisScript ABORT = new RedisScript("""
-            if redis.call('GET', KEYS[3]) == ARGV[1] then
-                redis.call('DEL', KEYS[3])
+            if redis.call('GET', KEYS[2]) == ARGV[1] then
+                redis.call('DEL', KEYS[2])
             end
             return 0
             """);
 
-    private static final RedisScript INVALIDATE = new RedisScript("""
-            redis.call('HDEL', KEYS[1], 'warm')
-            redis.call('HINCRBY', KEYS[1], 'epoch', 1)
+    private static final RedisScript TRY_SWEEP = new RedisScript("""
+            if redis.call('HEXISTS', KEYS[1], 'warm') == 0 then
+                return false
+            end
+            if not redis.call('SET', KEYS[3], '1', 'NX', 'PX', ARGV[1]) then
+                return false
+            end
+            return redis.call('HGET', KEYS[1], 'swept')
+            """);
+
+    private static final RedisScript COMPLETE_SWEEP = new RedisScript("""
+            if redis.call('HEXISTS', KEYS[1], 'warm') == 1 then
+                redis.call('HSET', KEYS[1], 'swept', ARGV[1])
+            end
             return 0
             """);
 
     private final UnifiedJedis jedis;
     private final String stateKey;
-    private final String dirtyKey;
     private final List<String> keys;
 
-    RedisCacheState(UnifiedJedis jedis, String stateKey, String dirtyKey, String lockKey) {
+    RedisCacheState(UnifiedJedis jedis, String stateKey, String lockKey, String sweepKey) {
         this.jedis = jedis;
         this.stateKey = stateKey;
-        this.dirtyKey = dirtyKey;
-        this.keys = List.of(stateKey, dirtyKey, lockKey);
+        this.keys = List.of(stateKey, lockKey, sweepKey);
     }
 
     @Override
     public boolean isWarm() {
         return jedis.hexists(stateKey, "warm");
-    }
-
-    @Override
-    public boolean markDirtyUnlessWarm(String key) {
-        return eval(MARK_DIRTY, key);
     }
 
     @Override
@@ -94,30 +85,27 @@ final class RedisCacheState implements CacheState {
 
     @Override
     public boolean renewWarmUp(long epoch) {
-        return eval(RENEW, String.valueOf(epoch), LEASE_MILLIS);
+        return (Long) RENEW.eval(jedis, keys, List.of(String.valueOf(epoch), LEASE_MILLIS)) == 1;
     }
 
     @Override
-    public List<String> pollDirty(int count) {
-        return List.copyOf(jedis.spop(dirtyKey, count));
-    }
-
-    @Override
-    public boolean completeWarmUp(long epoch) {
-        return eval(COMPLETE, String.valueOf(epoch));
+    public boolean completeWarmUp(long epoch, long watermark) {
+        return (Long) COMPLETE.eval(jedis, keys, List.of(String.valueOf(epoch), String.valueOf(watermark))) == 1;
     }
 
     @Override
     public void abortWarmUp(long epoch) {
-        eval(ABORT, String.valueOf(epoch));
+        ABORT.eval(jedis, keys, List.of(String.valueOf(epoch)));
     }
 
     @Override
-    public void invalidate() {
-        INVALIDATE.eval(jedis, keys, List.of());
+    public OptionalLong tryStartSweep(long intervalMillis) {
+        String watermark = (String) TRY_SWEEP.eval(jedis, keys, List.of(String.valueOf(intervalMillis)));
+        return watermark == null ? OptionalLong.empty() : OptionalLong.of(Long.parseLong(watermark));
     }
 
-    private boolean eval(RedisScript script, String... args) {
-        return (Long) script.eval(jedis, keys, List.of(args)) == 1;
+    @Override
+    public void completeSweep(long watermark) {
+        COMPLETE_SWEEP.eval(jedis, keys, List.of(String.valueOf(watermark)));
     }
 }

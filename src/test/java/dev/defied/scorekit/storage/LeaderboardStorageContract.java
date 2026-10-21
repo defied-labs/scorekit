@@ -4,9 +4,7 @@ import dev.defied.scorekit.codec.ScoreType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.ExecutorService;
@@ -16,7 +14,6 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public abstract class LeaderboardStorageContract {
@@ -146,54 +143,6 @@ public abstract class LeaderboardStorageContract {
     }
 
     @Test
-    void scanVisitsEveryEntry() {
-        for (int i = 0; i < 10; i++) {
-            storage.put("k" + i, (double) i);
-        }
-
-        Map<String, Double> scanned = scanAll(storage);
-
-        assertEquals(10, scanned.size());
-        assertEquals(7.0, scanned.get("k7"));
-    }
-
-    @Test
-    void scanOfEmptyStorageFinishes() {
-        ScanPage<Double> page = storage.scan(null, 10);
-
-        assertEquals(List.of(), page.entries());
-        assertNull(page.next());
-    }
-
-    @Test
-    void lexicographicScanVisitsEveryEntry() {
-        LeaderboardStorage<String> lex = create(ScoreType.LEXICOGRAPHIC);
-        lex.put("a", "x");
-        lex.put("b", "y");
-        lex.put("c", "z");
-
-        assertEquals(Map.of("a", "x", "b", "y", "c", "z"), scanAll(lex));
-    }
-
-    @Test
-    void clearRemovesEverything() {
-        storage.put("a", 1.0);
-        storage.put("b", 2.0);
-        LeaderboardStorage<String> lex = create(ScoreType.LEXICOGRAPHIC);
-        lex.put("a", "x");
-
-        storage.clear();
-        lex.clear();
-
-        assertEquals(0, storage.size());
-        assertEquals(List.of(), storage.top(10));
-        assertEquals(Optional.empty(), storage.score("a"));
-        assertEquals(0, lex.size());
-        assertEquals(OptionalLong.empty(), lex.rank("a"));
-        assertEquals(List.of(), lex.top(10));
-    }
-
-    @Test
     void concurrentUpdatesKeepRankingConsistent() throws InterruptedException {
         LeaderboardStorage<String> lex = create(ScoreType.LEXICOGRAPHIC);
         ExecutorService executor = Executors.newFixedThreadPool(8);
@@ -227,17 +176,6 @@ public abstract class LeaderboardStorageContract {
             assertEquals(OptionalLong.of(i + 1), storage.rank(entry.key()));
             assertEquals(Optional.of(entry.score()), storage.score(entry.key()));
         }
-    }
-
-    private static <S> Map<String, S> scanAll(LeaderboardStorage<S> storage) {
-        Map<String, S> scanned = new HashMap<>();
-        String cursor = null;
-        do {
-            ScanPage<S> page = storage.scan(cursor, 3);
-            page.entries().forEach(entry -> scanned.put(entry.key(), entry.score()));
-            cursor = page.next();
-        } while (cursor != null);
-        return scanned;
     }
 
     private static <S> List<String> keys(List<StoredEntry<S>> entries) {

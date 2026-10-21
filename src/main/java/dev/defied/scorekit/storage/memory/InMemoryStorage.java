@@ -1,12 +1,17 @@
 package dev.defied.scorekit.storage.memory;
 
 import dev.defied.scorekit.codec.ScoreType;
-import dev.defied.scorekit.storage.LeaderboardStorage;
 import dev.defied.scorekit.storage.ScanPage;
 import dev.defied.scorekit.storage.StoredEntry;
+import dev.defied.scorekit.storage.VersionedEntry;
+import dev.defied.scorekit.storage.VersionedStorage;
 
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.NavigableMap;
 import java.util.NavigableSet;
 import java.util.Optional;
@@ -16,17 +21,23 @@ import java.util.TreeSet;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Predicate;
+import java.util.stream.Stream;
 
-public final class InMemoryStorage<S> implements LeaderboardStorage<S> {
+public final class InMemoryStorage<S> implements VersionedStorage<S> {
 
-    private final NavigableMap<String, S> scores = new TreeMap<>(ScoreType.LEXICOGRAPHIC.order());
+    private static final Comparator<String> KEY_ORDER = ScoreType.LEXICOGRAPHIC.order();
+
+    private final NavigableMap<String, S> scores = new TreeMap<>(KEY_ORDER);
+    private final Map<String, Long> versions = new HashMap<>();
+    private final LinkedHashMap<String, Tombstone> removed = new LinkedHashMap<>();
     private final NavigableSet<StoredEntry<S>> ranking;
     private final Lock readLock;
     private final Lock writeLock;
 
     public InMemoryStorage(ScoreType<S> type) {
         Comparator<StoredEntry<S>> ascending = Comparator.comparing(StoredEntry<S>::score, type.order())
-                .thenComparing(StoredEntry::key, ScoreType.LEXICOGRAPHIC.order());
+                .thenComparing(StoredEntry::key, KEY_ORDER);
         ranking = new TreeSet<>(ascending.reversed());
         ReadWriteLock lock = new ReentrantReadWriteLock();
         readLock = lock.readLock();
@@ -34,14 +45,49 @@ public final class InMemoryStorage<S> implements LeaderboardStorage<S> {
     }
 
     @Override
-    public void put(String key, S score) {
+    public long putVersioned(String key, S score) {
         writeLock.lock();
         try {
-            S previous = scores.put(key, score);
-            if (previous != null) {
-                ranking.remove(new StoredEntry<>(key, previous));
+            long version = VersionedStorage.next(currentVersion(key));
+            store(key, score, version);
+            return version;
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    @Override
+    public OptionalLong removeVersioned(String key) {
+        writeLock.lock();
+        try {
+            if (!scores.containsKey(key)) {
+                return OptionalLong.empty();
             }
-            ranking.add(new StoredEntry<>(key, score));
+            long version = VersionedStorage.next(currentVersion(key));
+            drop(key, version);
+            return OptionalLong.of(version);
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    void putIfNewer(String key, S score, long version) {
+        writeLock.lock();
+        try {
+            if (currentVersion(key) < version) {
+                store(key, score, version);
+            }
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    void removeIfNewer(String key, long version) {
+        writeLock.lock();
+        try {
+            if (currentVersion(key) < version) {
+                drop(key, version);
+            }
         } finally {
             writeLock.unlock();
         }
@@ -82,21 +128,6 @@ public final class InMemoryStorage<S> implements LeaderboardStorage<S> {
     }
 
     @Override
-    public boolean remove(String key) {
-        writeLock.lock();
-        try {
-            S previous = scores.remove(key);
-            if (previous == null) {
-                return false;
-            }
-            ranking.remove(new StoredEntry<>(key, previous));
-            return true;
-        } finally {
-            writeLock.unlock();
-        }
-    }
-
-    @Override
     public long size() {
         readLock.lock();
         try {
@@ -111,24 +142,96 @@ public final class InMemoryStorage<S> implements LeaderboardStorage<S> {
         readLock.lock();
         try {
             NavigableMap<String, S> remaining = cursor == null ? scores : scores.tailMap(cursor, false);
-            List<StoredEntry<S>> entries = remaining.entrySet().stream()
+            return ScanPage.of(remaining.entrySet().stream()
                     .limit(count)
-                    .map(entry -> new StoredEntry<>(entry.getKey(), entry.getValue()))
-                    .toList();
-            return new ScanPage<>(entries, entries.isEmpty() || entries.size() < count ? null : entries.getLast().key());
+                    .map(entry -> new VersionedEntry<>(entry.getKey(), entry.getValue(), versions.get(entry.getKey())))
+                    .toList(), count);
         } finally {
             readLock.unlock();
         }
     }
 
     @Override
-    public void clear() {
+    public ScanPage<S> scanChanges(long sinceVersion, String cursor, int count) {
+        readLock.lock();
+        try {
+            Stream<VersionedEntry<S>> live = versions.entrySet().stream()
+                    .map(entry -> new VersionedEntry<>(entry.getKey(), scores.get(entry.getKey()), entry.getValue()));
+            Stream<VersionedEntry<S>> dropped = removed.entrySet().stream()
+                    .map(entry -> VersionedEntry.<S>removed(entry.getKey(), entry.getValue().version()));
+            return ScanPage.of(Stream.concat(live, dropped)
+                    .filter(entry -> entry.version() >= sinceVersion)
+                    .filter(entry -> cursor == null || KEY_ORDER.compare(entry.key(), cursor) > 0)
+                    .sorted(Comparator.comparing(VersionedEntry::key, KEY_ORDER))
+                    .limit(count)
+                    .toList(), count);
+        } finally {
+            readLock.unlock();
+        }
+    }
+
+    @Override
+    public void purgeRemoved(long beforeVersion) {
+        purgeWhile(tombstone -> tombstone.version() < beforeVersion);
+    }
+
+    void expireRemoved(long removedBeforeMillis) {
+        purgeWhile(tombstone -> tombstone.removedAtMillis() < removedBeforeMillis);
+    }
+
+    private void purgeWhile(Predicate<Tombstone> expired) {
+        writeLock.lock();
+        try {
+            Iterator<Tombstone> oldest = removed.values().iterator();
+            while (oldest.hasNext() && expired.test(oldest.next())) {
+                oldest.remove();
+            }
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    void clear() {
         writeLock.lock();
         try {
             scores.clear();
+            versions.clear();
+            removed.clear();
             ranking.clear();
         } finally {
             writeLock.unlock();
         }
+    }
+
+    private long currentVersion(String key) {
+        Long version = versions.get(key);
+        if (version != null) {
+            return version;
+        }
+        Tombstone tombstone = removed.get(key);
+        return tombstone == null ? Long.MIN_VALUE : tombstone.version();
+    }
+
+    private void store(String key, S score, long version) {
+        S previous = scores.put(key, score);
+        if (previous != null) {
+            ranking.remove(new StoredEntry<>(key, previous));
+        }
+        ranking.add(new StoredEntry<>(key, score));
+        versions.put(key, version);
+        removed.remove(key);
+    }
+
+    private void drop(String key, long version) {
+        S previous = scores.remove(key);
+        if (previous != null) {
+            ranking.remove(new StoredEntry<>(key, previous));
+        }
+        versions.remove(key);
+        removed.remove(key);
+        removed.put(key, new Tombstone(version, System.currentTimeMillis()));
+    }
+
+    private record Tombstone(long version, long removedAtMillis) {
     }
 }

@@ -9,27 +9,31 @@ import dev.defied.scorekit.storage.memory.InMemoryStorageFactory;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 class CachedStorageTest extends LeaderboardStorageContract {
 
-    private final ControlledStorage<Double> primary = new ControlledStorage<>(new InMemoryStorage<>(ScoreType.NUMERIC));
-    private final ControlledStorage<Double> cache = new ControlledStorage<>(new InMemoryStorage<>(ScoreType.NUMERIC));
-    private final CacheState state = new InMemoryStorageFactory().cacheState(new LeaderboardId("test", "board"));
-    private final CachedStorage<Double> cached = new CachedStorage<>(primary, cache, state);
+    private static final LeaderboardId ID = new LeaderboardId("test", "board");
+
+    private final InMemoryStorageFactory memory = new InMemoryStorageFactory();
+    private final ControlledPrimary<Double> primary = new ControlledPrimary<>(new InMemoryStorage<>(ScoreType.NUMERIC));
+    private final ControlledCache<Double> cache = new ControlledCache<>(memory.createCache(ID, ScoreType.NUMERIC));
+    private final CachedStorage<Double> cached = new CachedStorage<>(primary, cache);
 
     @Override
     protected <S> LeaderboardStorage<S> create(ScoreType<S> type) {
-        InMemoryStorageFactory memory = new InMemoryStorageFactory();
-        return new CachedStorageFactory(memory, memory).create(new LeaderboardId("test", "board"), type);
+        return new CachedStorageFactory(memory, memory).create(ID, type);
     }
 
     @Test
@@ -38,15 +42,14 @@ class CachedStorageTest extends LeaderboardStorageContract {
         primary.put("b", 2.0);
 
         assertEquals(Optional.of(1.0), cached.score("a"));
-        awaitWarm();
+        awaitWarm(cached, cache.state());
 
         assertEquals(primary.top(10), cache.top(10));
     }
 
     @Test
-    void writesReachBothStoragesOnceWarm() {
+    void writesReachBothStorages() {
         cached.warmUp();
-        assertTrue(state.isWarm());
 
         cached.put("a", 3.0);
         assertEquals(Optional.of(3.0), primary.score("a"));
@@ -76,24 +79,62 @@ class CachedStorageTest extends LeaderboardStorageContract {
         resume.countDown();
         assertTrue(warmer.join(Duration.ofSeconds(5)));
 
-        assertTrue(state.isWarm());
+        assertTrue(cache.state().isWarm());
         assertEquals(Optional.empty(), cache.score("removed"));
         assertEquals(Optional.of(9.0), cache.score("updated"));
         assertEquals(primary.top(10), cache.top(10));
     }
 
     @Test
-    void failedCacheWriteInvalidatesAndRecovers() throws InterruptedException {
+    void concurrentWritersFromSeveralInstancesConverge() throws InterruptedException {
+        List<CachedStorage<Double>> instances = List.of(cached, new CachedStorage<>(primary, cache));
+        cached.warmUp();
+
+        ExecutorService executor = Executors.newFixedThreadPool(8);
+        for (int thread = 0; thread < 8; thread++) {
+            executor.execute(() -> {
+                ThreadLocalRandom random = ThreadLocalRandom.current();
+                for (int i = 0; i < 2_000; i++) {
+                    CachedStorage<Double> instance = instances.get(random.nextInt(instances.size()));
+                    String key = "k" + random.nextInt(20);
+                    if (random.nextInt(4) == 0) {
+                        instance.remove(key);
+                    } else {
+                        instance.put(key, (double) random.nextInt(100));
+                    }
+                }
+            });
+        }
+        executor.shutdown();
+        assertTrue(executor.awaitTermination(30, TimeUnit.SECONDS));
+
+        assertEquals(primary.top(Integer.MAX_VALUE), cache.top(Integer.MAX_VALUE));
+    }
+
+    @Test
+    void failedCacheWriteIsRepairedBySweep() {
         cached.warmUp();
         cache.failing = true;
 
         cached.put("a", 1.0);
-
-        assertFalse(state.isWarm());
-        assertEquals(Optional.of(1.0), cached.score("a"));
         cache.failing = false;
-        awaitWarm();
+        assertEquals(Optional.empty(), cache.score("a"));
+
+        cached.sweep();
         assertEquals(Optional.of(1.0), cache.score("a"));
+    }
+
+    @Test
+    void writesThatNeverReachedTheCacheAreRepairedBySweep() {
+        cached.put("gone", 1.0);
+        cached.warmUp();
+
+        primary.put("lost", 7.0);
+        primary.remove("gone");
+        cached.sweep();
+
+        assertEquals(Optional.of(7.0), cache.score("lost"));
+        assertEquals(Optional.empty(), cache.score("gone"));
     }
 
     @Test
@@ -107,23 +148,28 @@ class CachedStorageTest extends LeaderboardStorageContract {
     }
 
     @Test
-    void clearInvalidatesCache() {
-        cached.put("a", 1.0);
+    void unavailableCacheIsSkippedForAWhile() {
         cached.warmUp();
+        cache.failing = true;
+        cached.score("a");
+        cache.failing = false;
+        int calls = cache.calls.get();
 
-        cached.clear();
+        cached.put("a", 1.0);
+        cached.score("a");
+        cached.top(10);
 
-        assertFalse(state.isWarm());
-        assertEquals(0, cached.size());
+        assertEquals(calls, cache.calls.get());
+        assertEquals(Optional.of(1.0), cached.score("a"));
     }
 
-    private void awaitWarm() throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+    static void awaitWarm(LeaderboardStorage<?> storage, CacheState state) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
         while (!state.isWarm()) {
             if (System.nanoTime() > deadline) {
                 fail("Cache did not warm up");
             }
-            cached.size();
+            storage.size();
             Thread.sleep(10);
         }
     }
