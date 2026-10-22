@@ -5,6 +5,7 @@ import dev.defied.scorekit.codec.ScoreType;
 import dev.defied.scorekit.storage.LeaderboardId;
 import dev.defied.scorekit.storage.LeaderboardStorage;
 import dev.defied.scorekit.storage.LeaderboardStorageContract;
+import dev.defied.scorekit.storage.Parallel;
 import dev.defied.scorekit.storage.jdbc.JdbcStorageFactory;
 import dev.defied.scorekit.storage.redis.RedisStorageFactory;
 import org.junit.jupiter.api.AfterAll;
@@ -25,13 +26,9 @@ import java.sql.Statement;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @Testcontainers
 class RedisJdbcCachedStorageTest extends LeaderboardStorageContract {
@@ -78,7 +75,7 @@ class RedisJdbcCachedStorageTest extends LeaderboardStorageContract {
     }
 
     @Test
-    void cacheConvergesWithDatabaseUnderConcurrentWritersFromSeveralInstances() throws InterruptedException {
+    void cacheConvergesWithDatabaseUnderConcurrentWritersFromSeveralInstances() throws Exception {
         LeaderboardId id = new LeaderboardId("test", UUID.randomUUID().toString());
         List<LeaderboardStorage<Double>> instances = List.of(
                 factory.create(id, ScoreType.NUMERIC),
@@ -87,23 +84,18 @@ class RedisJdbcCachedStorageTest extends LeaderboardStorageContract {
             instances.getFirst().put("seed" + i, (double) i);
         }
 
-        ExecutorService executor = Executors.newFixedThreadPool(6);
-        for (int thread = 0; thread < 6; thread++) {
-            executor.execute(() -> {
-                ThreadLocalRandom random = ThreadLocalRandom.current();
-                for (int i = 0; i < 400; i++) {
-                    LeaderboardStorage<Double> instance = instances.get(random.nextInt(instances.size()));
-                    String key = (random.nextBoolean() ? "seed" : "k") + random.nextInt(30);
-                    switch (random.nextInt(3)) {
-                        case 0 -> instance.remove(key);
-                        case 1 -> instance.put(key, (double) random.nextInt(1_000));
-                        default -> instance.top(5);
-                    }
+        Parallel.run(6, () -> {
+            ThreadLocalRandom random = ThreadLocalRandom.current();
+            for (int i = 0; i < 400; i++) {
+                LeaderboardStorage<Double> instance = instances.get(random.nextInt(instances.size()));
+                String key = (random.nextBoolean() ? "seed" : "k") + random.nextInt(30);
+                switch (random.nextInt(3)) {
+                    case 0 -> instance.remove(key);
+                    case 1 -> instance.put(key, (double) random.nextInt(1_000));
+                    default -> instance.top(5);
                 }
-            });
-        }
-        executor.shutdown();
-        assertTrue(executor.awaitTermination(60, TimeUnit.SECONDS));
+            }
+        });
 
         CacheStorage<Double> cache = redisFactory.createCache(id, ScoreType.NUMERIC);
         CachedStorageTest.awaitWarm(instances.getFirst(), cache.state());

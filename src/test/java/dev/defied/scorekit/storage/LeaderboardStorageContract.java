@@ -7,10 +7,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -143,26 +140,21 @@ public abstract class LeaderboardStorageContract {
     }
 
     @Test
-    void concurrentUpdatesKeepRankingConsistent() throws InterruptedException {
+    void concurrentUpdatesKeepRankingConsistent() throws Exception {
         LeaderboardStorage<String> lex = create(ScoreType.LEXICOGRAPHIC);
-        ExecutorService executor = Executors.newFixedThreadPool(8);
-        for (int thread = 0; thread < 8; thread++) {
-            executor.execute(() -> {
-                ThreadLocalRandom random = ThreadLocalRandom.current();
-                for (int i = 0; i < 2_000; i++) {
-                    String key = "k" + random.nextInt(50);
-                    if (random.nextInt(10) == 0) {
-                        storage.remove(key);
-                        lex.remove(key);
-                    } else {
-                        storage.put(key, (double) random.nextInt(20));
-                        lex.put(key, "s" + random.nextInt(20));
-                    }
+        Parallel.run(8, () -> {
+            ThreadLocalRandom random = ThreadLocalRandom.current();
+            for (int i = 0; i < 2_000; i++) {
+                String key = "k" + random.nextInt(50);
+                if (random.nextInt(10) == 0) {
+                    storage.remove(key);
+                    lex.remove(key);
+                } else {
+                    storage.put(key, (double) random.nextInt(20));
+                    lex.put(key, "s" + random.nextInt(20));
                 }
-            });
-        }
-        executor.shutdown();
-        assertTrue(executor.awaitTermination(60, TimeUnit.SECONDS));
+            }
+        });
 
         assertConsistent(storage);
         assertConsistent(lex);

@@ -4,6 +4,7 @@ import dev.defied.scorekit.codec.ScoreType;
 import dev.defied.scorekit.storage.LeaderboardId;
 import dev.defied.scorekit.storage.LeaderboardStorage;
 import dev.defied.scorekit.storage.LeaderboardStorageContract;
+import dev.defied.scorekit.storage.Parallel;
 import dev.defied.scorekit.storage.memory.InMemoryStorage;
 import dev.defied.scorekit.storage.memory.InMemoryStorageFactory;
 import org.junit.jupiter.api.Test;
@@ -13,8 +14,6 @@ import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
@@ -87,27 +86,22 @@ class CachedStorageTest extends LeaderboardStorageContract {
     }
 
     @Test
-    void concurrentWritersFromSeveralInstancesConverge() throws InterruptedException {
+    void concurrentWritersFromSeveralInstancesConverge() throws Exception {
         List<CachedStorage<Double>> instances = List.of(cached, new CachedStorage<>(primary, cache));
         cached.warmUp();
 
-        ExecutorService executor = Executors.newFixedThreadPool(8);
-        for (int thread = 0; thread < 8; thread++) {
-            executor.execute(() -> {
-                ThreadLocalRandom random = ThreadLocalRandom.current();
-                for (int i = 0; i < 2_000; i++) {
-                    CachedStorage<Double> instance = instances.get(random.nextInt(instances.size()));
-                    String key = "k" + random.nextInt(20);
-                    if (random.nextInt(4) == 0) {
-                        instance.remove(key);
-                    } else {
-                        instance.put(key, (double) random.nextInt(100));
-                    }
+        Parallel.run(8, () -> {
+            ThreadLocalRandom random = ThreadLocalRandom.current();
+            for (int i = 0; i < 2_000; i++) {
+                CachedStorage<Double> instance = instances.get(random.nextInt(instances.size()));
+                String key = "k" + random.nextInt(20);
+                if (random.nextInt(4) == 0) {
+                    instance.remove(key);
+                } else {
+                    instance.put(key, (double) random.nextInt(100));
                 }
-            });
-        }
-        executor.shutdown();
-        assertTrue(executor.awaitTermination(30, TimeUnit.SECONDS));
+            }
+        });
 
         assertEquals(primary.top(Integer.MAX_VALUE), cache.top(Integer.MAX_VALUE));
     }
