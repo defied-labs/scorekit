@@ -4,7 +4,7 @@ Leaderboards for Java that stay fast with millions of entries. Scores live in a 
 
 - Any number of providers, each with any number of leaderboards
 - Generic keys and scores: numbers, strings or your own types through codecs
-- Storage backends: in memory, Redis, JDBC (PostgreSQL schema included), or the database with a Redis cache in front
+- Storage backends: in memory, Redis, PostgreSQL, MySQL, MariaDB, MongoDB, or one of the databases with a Redis cache in front
 
 Requires Java 21.
 
@@ -71,10 +71,11 @@ ScoreKit.builder()
 |---|---|
 | `InMemoryStorageFactory` | tests, single process |
 | `RedisStorageFactory(UnifiedJedis)` | Redis only |
-| `JdbcStorageFactory(DataSource)` | database only |
-| `CachedStorageFactory(cache, primary)` | database as the source of truth, Redis as the read cache |
+| `JdbcStorageFactory(DataSource)` | PostgreSQL, MySQL or MariaDB only |
+| `MongoStorageFactory(MongoDatabase)` | MongoDB only |
+| `CachedStorageFactory(cache, primary)` | a database as the source of truth, Redis as the read cache |
 
-Jedis and the JDBC driver are not bundled: add `redis.clients:jedis` 8.x and your driver to your own build.
+No client library is bundled. Add the ones you use to your own build: `redis.clients:jedis` 8.x, `org.mongodb:mongodb-driver-sync` 5.x, or your JDBC driver.
 
 ### Database with a Redis cache
 
@@ -98,19 +99,27 @@ Requirements:
 - An eviction policy that cannot drop ScoreKit keys: `noeviction` or one of the `volatile-*` policies.
 - Clocks on the application servers within 20 seconds of each other.
 
-### Database schema
+### Relational databases
 
-Apply `dev/defied/scorekit/storage/jdbc/postgresql.sql`, which ships in the jar, before you start:
+`JdbcStorageFactory` detects PostgreSQL, MySQL (8.0 or newer) and MariaDB (10.2 or newer) from the `DataSource`. Create the tables once, or apply the script for your database from `dev/defied/scorekit/storage/jdbc/` in the jar with your migration tool:
 
 ```java
-try (InputStream schema = JdbcStorageFactory.class.getResourceAsStream("postgresql.sql");
-     Connection connection = dataSource.getConnection();
-     Statement statement = connection.createStatement()) {
-    statement.execute(new String(schema.readAllBytes(), StandardCharsets.UTF_8));
-}
+JdbcStorageFactory jdbc = new JdbcStorageFactory(dataSource);
+jdbc.createSchema();
 ```
 
-The storage uses portable SQL; only PostgreSQL is tested. Other databases need an equivalent schema whose text columns compare by code point and whose numeric columns accept infinities.
+On MySQL and MariaDB:
+
+- Provider names, leaderboard names, keys and text scores are limited to 191 characters.
+- Scores cannot be infinite.
+
+### MongoDB
+
+```java
+MongoStorageFactory mongo = new MongoStorageFactory(client.getDatabase("game"));
+```
+
+MongoDB 4.2 or newer is required. The factory creates its collections and indexes when it starts.
 
 ## Building
 
@@ -118,7 +127,7 @@ The storage uses portable SQL; only PostgreSQL is tested. Other databases need a
 ./gradlew build
 ```
 
-The Redis and PostgreSQL tests run in Docker through Testcontainers.
+The Redis and database tests run in Docker through Testcontainers.
 
 ## License
 
