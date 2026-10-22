@@ -19,6 +19,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -161,6 +162,16 @@ class CachedStorageTest extends LeaderboardStorageContract {
 
         assertEquals(calls, cache.calls.get());
         assertEquals(Optional.of(1.0), cached.score("a"));
+    }
+
+    @Test
+    void closedFactoryRejectsNewStorages() {
+        CachedStorageFactory factory = new CachedStorageFactory(memory, memory);
+        factory.create(ID, ScoreType.NUMERIC);
+
+        factory.close();
+
+        assertThrows(IllegalStateException.class, () -> factory.create(ID, ScoreType.NUMERIC));
     }
 
     static void awaitWarm(LeaderboardStorage<?> storage, CacheState state) throws InterruptedException {

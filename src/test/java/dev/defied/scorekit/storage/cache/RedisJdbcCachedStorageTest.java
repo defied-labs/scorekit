@@ -67,6 +67,7 @@ class RedisJdbcCachedStorageTest extends LeaderboardStorageContract {
 
     @AfterAll
     static void disconnect() {
+        factory.close();
         jedis.close();
         dataSource.close();
     }
