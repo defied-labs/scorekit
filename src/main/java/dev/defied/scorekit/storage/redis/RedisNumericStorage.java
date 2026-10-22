@@ -3,6 +3,7 @@ package dev.defied.scorekit.storage.redis;
 import dev.defied.scorekit.storage.LeaderboardStorage;
 import dev.defied.scorekit.storage.StoredEntry;
 import redis.clients.jedis.UnifiedJedis;
+import redis.clients.jedis.params.ZRangeParams;
 
 import java.util.List;
 import java.util.Optional;
@@ -39,7 +40,7 @@ final class RedisNumericStorage implements LeaderboardStorage<Double> {
         if (n == 0) {
             return List.of();
         }
-        return jedis.zrevrangeWithScores(rankingKey, 0, n - 1L).stream()
+        return jedis.zrangeWithScores(rankingKey, ZRangeParams.zrangeParams(0, n - 1L).rev()).stream()
                 .map(tuple -> new StoredEntry<>(tuple.getElement(), tuple.getScore()))
                 .toList();
     }
