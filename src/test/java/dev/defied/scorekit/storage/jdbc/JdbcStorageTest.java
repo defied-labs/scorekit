@@ -7,44 +7,28 @@ import dev.defied.scorekit.storage.LeaderboardStorage;
 import dev.defied.scorekit.storage.VersionedStorage;
 import dev.defied.scorekit.storage.VersionedStorageContract;
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.postgresql.PostgreSQLContainer;
+import org.testcontainers.containers.JdbcDatabaseContainer;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
-import java.sql.Connection;
-import java.sql.SQLException;
-import java.sql.Statement;
 import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
-@Testcontainers
-class JdbcStorageTest extends VersionedStorageContract {
-
-    @Container
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17-alpine");
+abstract class JdbcStorageTest extends VersionedStorageContract {
 
     private static HikariDataSource dataSource;
     private static JdbcStorageFactory factory;
 
-    @BeforeAll
-    static void connect() throws IOException, SQLException {
+    static void connect(JdbcDatabaseContainer<?> database) {
         dataSource = new HikariDataSource();
-        dataSource.setJdbcUrl(POSTGRES.getJdbcUrl());
-        dataSource.setUsername(POSTGRES.getUsername());
-        dataSource.setPassword(POSTGRES.getPassword());
-        try (InputStream schema = JdbcStorageFactory.class.getResourceAsStream("postgresql.sql");
-             Connection connection = dataSource.getConnection();
-             Statement statement = connection.createStatement()) {
-            statement.execute(new String(schema.readAllBytes(), StandardCharsets.UTF_8));
-        }
+        dataSource.setJdbcUrl(database.getJdbcUrl());
+        dataSource.setUsername(database.getUsername());
+        dataSource.setPassword(database.getPassword());
         factory = new JdbcStorageFactory(dataSource);
+        factory.createSchema();
     }
 
     @AfterAll
@@ -55,6 +39,11 @@ class JdbcStorageTest extends VersionedStorageContract {
     @Override
     protected <S> VersionedStorage<S> create(ScoreType<S> type) {
         return factory.create(new LeaderboardId("test", UUID.randomUUID().toString()), type);
+    }
+
+    @Test
+    void schemaCanBeCreatedAgain() {
+        factory.createSchema();
     }
 
     @Test
@@ -73,5 +62,26 @@ class JdbcStorageTest extends VersionedStorageContract {
         factory.create(new LeaderboardId("first", name), ScoreType.NUMERIC).put("a", 1.0);
 
         assertEquals(0, factory.create(new LeaderboardId("second", name), ScoreType.NUMERIC).size());
+    }
+
+    @Test
+    void keysAndScoresDifferingByTrailingSpaceAreDistinct() {
+        VersionedStorage<String> lex = create(ScoreType.LEXICOGRAPHIC);
+        lex.put("a", "x ");
+        lex.put("a ", "x");
+
+        assertEquals(Optional.of("x "), lex.score("a"));
+        assertEquals(Optional.of("x"), lex.score("a "));
+        assertEquals(2, lex.size());
+        assertEquals("a", lex.top(1).getFirst().key());
+    }
+
+    @Test
+    void infiniteScoresAreRejectedWhenUnsupported() {
+        assumeFalse(supportsInfiniteScores());
+        VersionedStorage<Double> storage = create(ScoreType.NUMERIC);
+
+        assertThrows(IllegalArgumentException.class, () -> storage.put("a", Double.POSITIVE_INFINITY));
+        assertEquals(0, storage.size());
     }
 }

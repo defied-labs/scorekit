@@ -12,6 +12,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -20,9 +21,9 @@ import java.util.OptionalLong;
 final class JdbcStorage<S> implements VersionedStorage<S> {
 
     private static final int PUT_ATTEMPTS = 3;
-    private static final String[] VERSION_COLUMN = {"version"};
 
     private final DataSource dataSource;
+    private final JdbcDialect dialect;
     private final LeaderboardId id;
     private final ScoreColumn<S> column;
     private final String update;
@@ -38,33 +39,40 @@ final class JdbcStorage<S> implements VersionedStorage<S> {
     private final String changesNext;
     private final String purge;
 
-    JdbcStorage(DataSource dataSource, LeaderboardId id, ScoreColumn<S> column) {
+    JdbcStorage(DataSource dataSource, JdbcDialect dialect, LeaderboardId id, ScoreColumn<S> column) {
         this.dataSource = dataSource;
+        this.dialect = dialect;
         this.id = id;
         this.column = column;
         String table = column.table();
         String scope = " WHERE provider = ? AND leaderboard = ?";
-        String live = scope + " AND NOT removed";
-        String nextVersion = "CASE WHEN version >= ? THEN version + 1 ELSE ? END";
+        String live = scope + " AND removed = FALSE";
+        String nextVersion = dialect.version("CASE WHEN version >= ? THEN version + 1 ELSE ? END");
+        String returning = dialect.returning() ? " RETURNING version" : "";
         String columns = "SELECT entry_key, score, version, removed FROM " + table;
-        update = "UPDATE " + table + " SET score = ?, removed = FALSE, version = " + nextVersion + scope + " AND entry_key = ?";
+        update = "UPDATE " + table + " SET score = ?, removed = FALSE, version = " + nextVersion + scope + " AND entry_key = ?" + returning;
         insert = "INSERT INTO " + table + " (provider, leaderboard, entry_key, score, version) VALUES (?, ?, ?, ?, ?)";
-        delete = "UPDATE " + table + " SET removed = TRUE, version = " + nextVersion + live + " AND entry_key = ?";
+        delete = "UPDATE " + table + " SET removed = TRUE, version = " + nextVersion + live + " AND entry_key = ?" + returning;
         select = "SELECT score FROM " + table + live + " AND entry_key = ?";
-        rank = "SELECT (SELECT COUNT(*) FROM " + table + " o WHERE o.provider = e.provider AND o.leaderboard = e.leaderboard"
-                + " AND NOT o.removed AND (o.score > e.score OR (o.score = e.score AND o.entry_key > e.entry_key)))"
-                + " FROM " + table + " e WHERE e.provider = ? AND e.leaderboard = ? AND NOT e.removed AND e.entry_key = ?";
-        top = "SELECT entry_key, score FROM " + table + live + " ORDER BY score DESC, entry_key DESC";
+        rank = dialect.correlatedRank()
+                ? "SELECT (SELECT COUNT(*) FROM " + table + " o WHERE o.provider = e.provider AND o.leaderboard = e.leaderboard"
+                + " AND o.removed = FALSE AND (o.score, o.entry_key) > (e.score, e.entry_key))"
+                + " FROM " + table + " e WHERE e.provider = ? AND e.leaderboard = ? AND e.removed = FALSE AND e.entry_key = ?"
+                : "SELECT COUNT(*) FROM " + table + live + " AND (score > ? OR (score = ? AND entry_key > ?))";
+        top = "SELECT entry_key, score FROM " + table + live + " ORDER BY score DESC, entry_key DESC LIMIT ?";
         count = "SELECT COUNT(*) FROM " + table + live;
-        scanFirst = columns + live + " ORDER BY entry_key";
-        scanNext = columns + live + " AND entry_key > ? ORDER BY entry_key";
-        changesFirst = columns + scope + " AND version >= ? ORDER BY entry_key";
-        changesNext = columns + scope + " AND version >= ? AND entry_key > ? ORDER BY entry_key";
-        purge = "DELETE FROM " + table + scope + " AND removed AND version < ?";
+        scanFirst = columns + live + " ORDER BY entry_key LIMIT ?";
+        scanNext = columns + live + " AND entry_key > ? ORDER BY entry_key LIMIT ?";
+        changesFirst = columns + scope + " AND version >= ? ORDER BY entry_key LIMIT ?";
+        changesNext = columns + scope + " AND version >= ? AND entry_key > ? ORDER BY entry_key LIMIT ?";
+        purge = "DELETE FROM " + table + scope + " AND removed = TRUE AND version < ?";
     }
 
     @Override
     public long putVersioned(String key, S score) {
+        if (!dialect.infiniteScores() && score instanceof Double value && value.isInfinite()) {
+            throw new IllegalArgumentException("Infinite scores are not supported by " + dialect);
+        }
         return execute(connection -> {
             for (int attempt = 1; ; attempt++) {
                 long now = VersionedStorage.now();
@@ -106,14 +114,35 @@ final class JdbcStorage<S> implements VersionedStorage<S> {
 
     @Override
     public Optional<S> score(String key) {
-        return query(select, statement -> bindEntry(statement, 1, key),
-                result -> result.next() ? Optional.of(column.reader().read(result, 1)) : Optional.empty());
+        return execute(connection -> score(connection, key));
     }
 
     @Override
     public OptionalLong rank(String key) {
-        return query(rank, statement -> bindEntry(statement, 1, key),
-                result -> result.next() ? OptionalLong.of(result.getLong(1) + 1) : OptionalLong.empty());
+        if (dialect.correlatedRank()) {
+            return query(rank, statement -> bindEntry(statement, 1, key),
+                    result -> result.next() ? OptionalLong.of(result.getLong(1) + 1) : OptionalLong.empty());
+        }
+        return execute(connection -> {
+            Optional<S> score = score(connection, key);
+            if (score.isEmpty()) {
+                return OptionalLong.empty();
+            }
+            return read(connection, rank, statement -> {
+                bindScope(statement);
+                column.writer().write(statement, 3, score.get());
+                column.writer().write(statement, 4, score.get());
+                statement.setString(5, key);
+            }, result -> {
+                result.next();
+                return OptionalLong.of(result.getLong(1) + 1);
+            });
+        });
+    }
+
+    private Optional<S> score(Connection connection, String key) throws SQLException {
+        return read(connection, select, statement -> bindEntry(statement, 1, key),
+                result -> result.next() ? Optional.of(column.reader().read(result, 1)) : Optional.empty());
     }
 
     @Override
@@ -123,7 +152,7 @@ final class JdbcStorage<S> implements VersionedStorage<S> {
         }
         return query(top, statement -> {
             bindScope(statement);
-            statement.setMaxRows(n);
+            statement.setInt(3, n);
         }, result -> {
             List<StoredEntry<S>> entries = new ArrayList<>();
             while (result.next()) {
@@ -144,9 +173,9 @@ final class JdbcStorage<S> implements VersionedStorage<S> {
     @Override
     public ScanPage<S> scan(String cursor, int count) {
         if (cursor == null) {
-            return page(scanFirst, this::bindScope, count);
+            return page(scanFirst, this::bindScope, 3, count);
         }
-        return page(scanNext, statement -> bindEntry(statement, 1, cursor), count);
+        return page(scanNext, statement -> bindEntry(statement, 1, cursor), 4, count);
     }
 
     @Override
@@ -157,7 +186,7 @@ final class JdbcStorage<S> implements VersionedStorage<S> {
             if (cursor != null) {
                 statement.setString(4, cursor);
             }
-        }, count);
+        }, cursor == null ? 4 : 5, count);
     }
 
     @Override
@@ -171,10 +200,10 @@ final class JdbcStorage<S> implements VersionedStorage<S> {
         });
     }
 
-    private ScanPage<S> page(String sql, Binder binder, int count) {
+    private ScanPage<S> page(String sql, Binder binder, int limitIndex, int count) {
         return ScanPage.of(query(sql, statement -> {
             binder.bind(statement);
-            statement.setMaxRows(count);
+            statement.setInt(limitIndex, count);
         }, result -> {
             List<VersionedEntry<S>> entries = new ArrayList<>();
             while (result.next()) {
@@ -186,24 +215,35 @@ final class JdbcStorage<S> implements VersionedStorage<S> {
     }
 
     private OptionalLong updateReturningVersion(Connection connection, String sql, Binder binder) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(sql, VERSION_COLUMN)) {
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
             binder.bind(statement);
-            statement.executeUpdate();
-            try (ResultSet keys = statement.getGeneratedKeys()) {
-                return keys.next() ? OptionalLong.of(keys.getLong(1)) : OptionalLong.empty();
+            if (dialect.returning()) {
+                try (ResultSet result = statement.executeQuery()) {
+                    return result.next() ? OptionalLong.of(result.getLong(1)) : OptionalLong.empty();
+                }
             }
+            if (statement.executeUpdate() == 0) {
+                return OptionalLong.empty();
+            }
+        }
+        try (Statement statement = connection.createStatement();
+             ResultSet result = statement.executeQuery("SELECT LAST_INSERT_ID()")) {
+            result.next();
+            return OptionalLong.of(result.getLong(1));
         }
     }
 
     private <T> T query(String sql, Binder binder, ResultReader<T> reader) {
-        return execute(connection -> {
-            try (PreparedStatement statement = connection.prepareStatement(sql)) {
-                binder.bind(statement);
-                try (ResultSet result = statement.executeQuery()) {
-                    return reader.read(result);
-                }
+        return execute(connection -> read(connection, sql, binder, reader));
+    }
+
+    private static <T> T read(Connection connection, String sql, Binder binder, ResultReader<T> reader) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            binder.bind(statement);
+            try (ResultSet result = statement.executeQuery()) {
+                return reader.read(result);
             }
-        });
+        }
     }
 
     private void bindScope(PreparedStatement statement) throws SQLException {

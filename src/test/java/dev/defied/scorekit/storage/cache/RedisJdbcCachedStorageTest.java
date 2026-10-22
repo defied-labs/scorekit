@@ -17,12 +17,6 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import redis.clients.jedis.RedisClient;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
-import java.sql.Connection;
-import java.sql.SQLException;
-import java.sql.Statement;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -46,19 +40,15 @@ class RedisJdbcCachedStorageTest extends LeaderboardStorageContract {
     private static CachedStorageFactory factory;
 
     @BeforeAll
-    static void connect() throws IOException, SQLException {
+    static void connect() {
         jedis = RedisClient.create(REDIS.getHost(), REDIS.getMappedPort(6379));
         dataSource = new HikariDataSource();
         dataSource.setJdbcUrl(POSTGRES.getJdbcUrl());
         dataSource.setUsername(POSTGRES.getUsername());
         dataSource.setPassword(POSTGRES.getPassword());
-        try (InputStream schema = JdbcStorageFactory.class.getResourceAsStream("postgresql.sql");
-             Connection connection = dataSource.getConnection();
-             Statement statement = connection.createStatement()) {
-            statement.execute(new String(schema.readAllBytes(), StandardCharsets.UTF_8));
-        }
         redisFactory = new RedisStorageFactory(jedis);
         jdbcFactory = new JdbcStorageFactory(dataSource);
+        jdbcFactory.createSchema();
         factory = new CachedStorageFactory(redisFactory, jdbcFactory);
     }
 

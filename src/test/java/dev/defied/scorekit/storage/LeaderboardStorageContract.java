@@ -12,6 +12,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 public abstract class LeaderboardStorageContract {
 
@@ -57,8 +58,13 @@ public abstract class LeaderboardStorageContract {
         assertEquals(OptionalLong.of(3), storage.rank("a"));
     }
 
+    protected boolean supportsInfiniteScores() {
+        return true;
+    }
+
     @Test
     void infiniteScoresAreOrdered() {
+        assumeTrue(supportsInfiniteScores());
         storage.put("low", Double.NEGATIVE_INFINITY);
         storage.put("mid", 0.0);
         storage.put("high", Double.POSITIVE_INFINITY);

@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS scorekit_numeric_scores (
 );
 
 CREATE INDEX IF NOT EXISTS scorekit_numeric_scores_ranking
-    ON scorekit_numeric_scores (provider, leaderboard, score, entry_key) WHERE NOT removed;
+    ON scorekit_numeric_scores (provider, leaderboard, score, entry_key) WHERE removed = FALSE;
 
 CREATE INDEX IF NOT EXISTS scorekit_numeric_scores_changes
     ON scorekit_numeric_scores (provider, leaderboard, version);
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS scorekit_text_scores (
 );
 
 CREATE INDEX IF NOT EXISTS scorekit_text_scores_ranking
-    ON scorekit_text_scores (provider, leaderboard, score, entry_key) WHERE NOT removed;
+    ON scorekit_text_scores (provider, leaderboard, score, entry_key) WHERE removed = FALSE;
 
 CREATE INDEX IF NOT EXISTS scorekit_text_scores_changes
     ON scorekit_text_scores (provider, leaderboard, version);
