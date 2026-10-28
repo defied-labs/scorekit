@@ -28,6 +28,28 @@ public abstract class CacheStorageContract {
     }
 
     @Test
+    void coldCacheIgnoresWrites() {
+        CacheStorage<Double> cache = createCache(ScoreType.NUMERIC);
+        cache.putIfNewer("a", 1.0, 1);
+        cache.removeIfNewer("b", 1);
+
+        assertEquals(0, warm(cache).size());
+        cache.putIfNewer("b", 2.0, 1);
+        assertEquals(Optional.of(2.0), cache.score("b"));
+    }
+
+    @Test
+    void writesDuringWarmUpAreKept() {
+        CacheStorage<Double> cache = createCache(ScoreType.NUMERIC);
+        long epoch = cache.state().beginWarmUp().orElseThrow();
+
+        cache.putIfNewer("a", 1.0, 1);
+        cache.state().completeWarmUp(epoch, 0);
+
+        assertEquals(Optional.of(1.0), cache.score("a"));
+    }
+
+    @Test
     void warmCacheServesReads() {
         CacheStorage<Double> cache = warm(createCache(ScoreType.NUMERIC));
         cache.putIfNewer("a", 1.0, 1);

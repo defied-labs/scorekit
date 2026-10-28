@@ -48,13 +48,17 @@ final class InMemoryCache<S> implements CacheStorage<S> {
 
     @Override
     public void putIfNewer(String key, S score, long version) {
-        storage.putIfNewer(key, score, version);
+        if (state.isAccepting()) {
+            storage.putIfNewer(key, score, version);
+        }
     }
 
     @Override
     public void removeIfNewer(String key, long version) {
-        storage.removeIfNewer(key, version);
-        storage.expireRemoved(System.currentTimeMillis() - TOMBSTONE_TTL_MILLIS);
+        if (state.isAccepting()) {
+            storage.removeIfNewer(key, version);
+            storage.expireRemoved(System.currentTimeMillis() - TOMBSTONE_TTL_MILLIS);
+        }
     }
 
     @Override

@@ -23,6 +23,12 @@ abstract class RedisCacheStorage<S> implements CacheStorage<S> {
             end
             """;
 
+    static final String ACCEPT = """
+            if redis.call('HEXISTS', KEYS[1], 'warm') == 0 and redis.call('EXISTS', KEYS[#KEYS]) == 0 then
+                return 0
+            end
+            """;
+
     private static final String COLD = "SCOREKIT_COLD";
     private static final String TOMBSTONE_TTL_MILLIS = "300000";
 
@@ -99,7 +105,7 @@ abstract class RedisCacheStorage<S> implements CacheStorage<S> {
 
     @Override
     public void clear() {
-        jedis.unlink(keys.subList(1, keys.size()).toArray(String[]::new));
+        jedis.unlink(keys.subList(1, keys.size() - 1).toArray(String[]::new));
     }
 
     @Override

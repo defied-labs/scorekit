@@ -8,7 +8,7 @@ import java.util.List;
 final class RedisLexicographicCache extends RedisCacheStorage<String> {
 
     private static final Scripts SCRIPTS = new Scripts(
-            new RedisScript("""
+            new RedisScript(ACCEPT + """
                     local current = redis.call('HGET', KEYS[4], ARGV[1])
                     if current and tonumber(current) >= tonumber(ARGV[3]) then
                         return 0
@@ -23,7 +23,7 @@ final class RedisLexicographicCache extends RedisCacheStorage<String> {
                     redis.call('HPERSIST', KEYS[4], 'FIELDS', 1, ARGV[1])
                     return 1
                     """),
-            new RedisScript("""
+            new RedisScript(ACCEPT + """
                     local current = redis.call('HGET', KEYS[4], ARGV[1])
                     if current and tonumber(current) >= tonumber(ARGV[2]) then
                         return 0
@@ -49,7 +49,7 @@ final class RedisLexicographicCache extends RedisCacheStorage<String> {
             new RedisScript(GUARD + "return redis.call('HLEN', KEYS[3])"));
 
     RedisLexicographicCache(UnifiedJedis jedis, String prefix, RedisCacheState state) {
-        super(jedis, List.of(prefix + "state", prefix + "lex", prefix + "scores", prefix + "versions"), SCRIPTS, state);
+        super(jedis, List.of(prefix + "state", prefix + "lex", prefix + "scores", prefix + "versions", prefix + "lock"), SCRIPTS, state);
     }
 
     @Override

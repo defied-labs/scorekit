@@ -9,7 +9,7 @@ import java.util.List;
 final class RedisNumericCache extends RedisCacheStorage<Double> {
 
     private static final Scripts SCRIPTS = new Scripts(
-            new RedisScript("""
+            new RedisScript(ACCEPT + """
                     local current = redis.call('HGET', KEYS[3], ARGV[1])
                     if current and tonumber(current) >= tonumber(ARGV[3]) then
                         return 0
@@ -19,7 +19,7 @@ final class RedisNumericCache extends RedisCacheStorage<Double> {
                     redis.call('HPERSIST', KEYS[3], 'FIELDS', 1, ARGV[1])
                     return 1
                     """),
-            new RedisScript("""
+            new RedisScript(ACCEPT + """
                     local current = redis.call('HGET', KEYS[3], ARGV[1])
                     if current and tonumber(current) >= tonumber(ARGV[2]) then
                         return 0
@@ -35,7 +35,7 @@ final class RedisNumericCache extends RedisCacheStorage<Double> {
             new RedisScript(GUARD + "return redis.call('ZCARD', KEYS[2])"));
 
     RedisNumericCache(UnifiedJedis jedis, String prefix, RedisCacheState state) {
-        super(jedis, List.of(prefix + "state", prefix + "ranking", prefix + "versions"), SCRIPTS, state);
+        super(jedis, List.of(prefix + "state", prefix + "ranking", prefix + "versions", prefix + "lock"), SCRIPTS, state);
     }
 
     @Override

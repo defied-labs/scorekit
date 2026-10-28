@@ -17,6 +17,10 @@ final class InMemoryCacheState implements CacheState {
         return warm;
     }
 
+    synchronized boolean isAccepting() {
+        return warm || warmingEpoch != 0;
+    }
+
     @Override
     public synchronized OptionalLong beginWarmUp() {
         if (warm || warmingEpoch != 0) {
