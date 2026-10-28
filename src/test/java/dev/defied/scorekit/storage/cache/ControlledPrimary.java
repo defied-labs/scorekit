@@ -46,6 +46,16 @@ final class ControlledPrimary<S> implements VersionedStorage<S> {
     }
 
     @Override
+    public Optional<StoredEntry<S>> entryBehind(StoredEntry<S> position, int offset) {
+        return delegate.entryBehind(position, offset);
+    }
+
+    @Override
+    public long countBetween(StoredEntry<S> ahead, StoredEntry<S> behind) {
+        return delegate.countBetween(ahead, behind);
+    }
+
+    @Override
     public Optional<S> score(String key) {
         return delegate.score(key);
     }

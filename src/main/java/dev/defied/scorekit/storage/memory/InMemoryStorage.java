@@ -128,6 +128,27 @@ public final class InMemoryStorage<S> implements VersionedStorage<S> {
     }
 
     @Override
+    public Optional<StoredEntry<S>> entryBehind(StoredEntry<S> position, int offset) {
+        readLock.lock();
+        try {
+            NavigableSet<StoredEntry<S>> behind = position == null ? ranking : ranking.tailSet(position, false);
+            return behind.stream().skip(offset - 1L).findFirst();
+        } finally {
+            readLock.unlock();
+        }
+    }
+
+    @Override
+    public long countBetween(StoredEntry<S> ahead, StoredEntry<S> behind) {
+        readLock.lock();
+        try {
+            return (ahead == null ? ranking.headSet(behind, false) : ranking.subSet(ahead, false, behind, false)).size();
+        } finally {
+            readLock.unlock();
+        }
+    }
+
+    @Override
     public long size() {
         readLock.lock();
         try {

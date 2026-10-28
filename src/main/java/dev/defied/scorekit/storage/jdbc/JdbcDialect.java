@@ -37,6 +37,10 @@ enum JdbcDialect {
         return postgres;
     }
 
+    boolean rowComparison() {
+        return postgres;
+    }
+
     String version(String expression) {
         return postgres ? expression : "LAST_INSERT_ID(" + expression + ")";
     }

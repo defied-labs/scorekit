@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -98,6 +99,53 @@ public abstract class VersionedStorageContract extends LeaderboardStorageContrac
         storage.purgeRemoved(removed + 1);
 
         assertEquals(List.of(), storage.scanChanges(0, null, 10).entries());
+    }
+
+    @Test
+    void entryBehindWalksTheRanking() {
+        VersionedStorage<Double> storage = ranked();
+
+        assertEquals(Optional.of(new StoredEntry<>("a", 3.0)), storage.entryBehind(null, 1));
+        assertEquals(Optional.of(new StoredEntry<>("b", 2.0)), storage.entryBehind(null, 3));
+        assertEquals(Optional.of(new StoredEntry<>("b", 2.0)), storage.entryBehind(new StoredEntry<>("c", 2.0), 1));
+        assertEquals(Optional.of(new StoredEntry<>("e", 1.0)), storage.entryBehind(new StoredEntry<>("a", 3.0), 3));
+        assertEquals(Optional.of(new StoredEntry<>("e", 1.0)), storage.entryBehind(new StoredEntry<>("x", 1.5), 1));
+        assertEquals(Optional.empty(), storage.entryBehind(new StoredEntry<>("b", 2.0), 2));
+    }
+
+    @Test
+    void countBetweenCountsLiveEntriesStrictlyInside() {
+        VersionedStorage<Double> storage = ranked();
+
+        assertEquals(0, storage.countBetween(null, new StoredEntry<>("a", 3.0)));
+        assertEquals(3, storage.countBetween(null, new StoredEntry<>("e", 1.0)));
+        assertEquals(2, storage.countBetween(new StoredEntry<>("a", 3.0), new StoredEntry<>("e", 1.0)));
+        assertEquals(0, storage.countBetween(new StoredEntry<>("c", 2.0), new StoredEntry<>("b", 2.0)));
+        assertEquals(2, storage.countBetween(new StoredEntry<>("z", 2.0), new StoredEntry<>("a", 2.0)));
+        assertEquals(1, storage.countBetween(new StoredEntry<>("c", 2.0), new StoredEntry<>("x", 1.5)));
+    }
+
+    @Test
+    void lexicographicWindowsFollowTheRanking() {
+        VersionedStorage<String> lex = create(ScoreType.LEXICOGRAPHIC);
+        lex.put("x", "apple");
+        lex.put("y", "banana");
+        lex.put("z", "cherry");
+
+        assertEquals(Optional.of(new StoredEntry<>("y", "banana")), lex.entryBehind(new StoredEntry<>("z", "cherry"), 1));
+        assertEquals(1, lex.countBetween(new StoredEntry<>("z", "cherry"), new StoredEntry<>("x", "apple")));
+        assertEquals(2, lex.countBetween(null, new StoredEntry<>("x", "apple")));
+    }
+
+    private VersionedStorage<Double> ranked() {
+        VersionedStorage<Double> storage = create(ScoreType.NUMERIC);
+        storage.put("a", 3.0);
+        storage.put("b", 2.0);
+        storage.put("c", 2.0);
+        storage.put("d", 2.5);
+        storage.remove("d");
+        storage.put("e", 1.0);
+        return storage;
     }
 
     private static <S> Map<String, VersionedEntry<S>> scanAll(Scanner<S> scanner) {

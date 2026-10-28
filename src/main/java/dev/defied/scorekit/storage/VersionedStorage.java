@@ -2,6 +2,7 @@ package dev.defied.scorekit.storage;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Optional;
 import java.util.OptionalLong;
 
 public interface VersionedStorage<S> extends LeaderboardStorage<S> {
@@ -15,6 +16,10 @@ public interface VersionedStorage<S> extends LeaderboardStorage<S> {
     ScanPage<S> scanChanges(long sinceVersion, String cursor, int count);
 
     void purgeRemoved(long beforeVersion);
+
+    Optional<StoredEntry<S>> entryBehind(StoredEntry<S> position, int offset);
+
+    long countBetween(StoredEntry<S> ahead, StoredEntry<S> behind);
 
     @Override
     default void put(String key, S score) {

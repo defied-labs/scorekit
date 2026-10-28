@@ -38,6 +38,10 @@ final class JdbcStorage<S> implements VersionedStorage<S> {
     private final String changesFirst;
     private final String changesNext;
     private final String purge;
+    private final String behindTop;
+    private final String behind;
+    private final String betweenTop;
+    private final String between;
 
     JdbcStorage(DataSource dataSource, JdbcDialect dialect, LeaderboardId id, ScoreColumn<S> column) {
         this.dataSource = dataSource;
@@ -58,14 +62,30 @@ final class JdbcStorage<S> implements VersionedStorage<S> {
                 ? "SELECT (SELECT COUNT(*) FROM " + table + " o WHERE o.provider = e.provider AND o.leaderboard = e.leaderboard"
                 + " AND o.removed = FALSE AND (o.score, o.entry_key) > (e.score, e.entry_key))"
                 + " FROM " + table + " e WHERE e.provider = ? AND e.leaderboard = ? AND e.removed = FALSE AND e.entry_key = ?"
-                : "SELECT COUNT(*) FROM " + table + live + " AND (score > ? OR (score = ? AND entry_key > ?))";
+                : count(table, live) + position(">");
         top = "SELECT entry_key, score FROM " + table + live + " ORDER BY score DESC, entry_key DESC LIMIT ?";
-        count = "SELECT COUNT(*) FROM " + table + live;
+        count = count(table, live);
         scanFirst = columns + live + " ORDER BY entry_key LIMIT ?";
         scanNext = columns + live + " AND entry_key > ? ORDER BY entry_key LIMIT ?";
         changesFirst = columns + scope + " AND version >= ? ORDER BY entry_key LIMIT ?";
         changesNext = columns + scope + " AND version >= ? AND entry_key > ? ORDER BY entry_key LIMIT ?";
         purge = "DELETE FROM " + table + scope + " AND removed = TRUE AND version < ?";
+        String ranked = "SELECT entry_key, score FROM " + table + live;
+        String oneBehind = " ORDER BY score DESC, entry_key DESC LIMIT 1 OFFSET ?";
+        behindTop = ranked + oneBehind;
+        behind = ranked + position("<") + oneBehind;
+        betweenTop = count(table, live) + position(">");
+        between = count(table, live) + position("<") + position(">");
+    }
+
+    private static String count(String table, String live) {
+        return "SELECT COUNT(*) FROM " + table + live;
+    }
+
+    private String position(String operator) {
+        return dialect.rowComparison()
+                ? " AND (score, entry_key) " + operator + " (?, ?)"
+                : " AND (score " + operator + " ? OR (score = ? AND entry_key " + operator + " ?))";
     }
 
     @Override
@@ -130,9 +150,7 @@ final class JdbcStorage<S> implements VersionedStorage<S> {
             }
             return read(connection, rank, statement -> {
                 bindScope(statement);
-                column.writer().write(statement, 3, score.get());
-                column.writer().write(statement, 4, score.get());
-                statement.setString(5, key);
+                bindPosition(statement, 3, new StoredEntry<>(key, score.get()));
             }, result -> {
                 result.next();
                 return OptionalLong.of(result.getLong(1) + 1);
@@ -159,6 +177,27 @@ final class JdbcStorage<S> implements VersionedStorage<S> {
                 entries.add(new StoredEntry<>(result.getString(1), column.reader().read(result, 2)));
             }
             return entries;
+        });
+    }
+
+    @Override
+    public Optional<StoredEntry<S>> entryBehind(StoredEntry<S> position, int offset) {
+        return query(position == null ? behindTop : behind, statement -> {
+            bindScope(statement);
+            statement.setInt(position == null ? 3 : bindPosition(statement, 3, position), offset - 1);
+        }, result -> result.next()
+                ? Optional.of(new StoredEntry<>(result.getString(1), column.reader().read(result, 2)))
+                : Optional.empty());
+    }
+
+    @Override
+    public long countBetween(StoredEntry<S> ahead, StoredEntry<S> behind) {
+        return query(ahead == null ? betweenTop : between, statement -> {
+            bindScope(statement);
+            bindPosition(statement, ahead == null ? 3 : bindPosition(statement, 3, ahead), behind);
+        }, result -> {
+            result.next();
+            return result.getLong(1);
         });
     }
 
@@ -244,6 +283,15 @@ final class JdbcStorage<S> implements VersionedStorage<S> {
                 return reader.read(result);
             }
         }
+    }
+
+    private int bindPosition(PreparedStatement statement, int index, StoredEntry<S> position) throws SQLException {
+        column.writer().write(statement, index++, position.score());
+        if (!dialect.rowComparison()) {
+            column.writer().write(statement, index++, position.score());
+        }
+        statement.setString(index++, position.key());
+        return index;
     }
 
     private void bindScope(PreparedStatement statement) throws SQLException {

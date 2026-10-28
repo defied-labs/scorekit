@@ -93,8 +93,7 @@ final class MongoStorage<S> implements VersionedStorage<S> {
             if (entry == null) {
                 return OptionalLong.empty();
             }
-            Object score = entry.get("score");
-            long ahead = collection.countDocuments(and(live, or(gt("score", score), and(eq("score", score), gt("key", key)))));
+            long ahead = collection.countDocuments(and(live, between(null, new StoredEntry<>(key, score(entry)))));
             return OptionalLong.of(ahead + 1);
         });
     }
@@ -107,6 +106,20 @@ final class MongoStorage<S> implements VersionedStorage<S> {
         return execute(() -> collection.find(live).sort(DESCENDING).limit(n).projection(ENTRY_FIELDS)
                 .map(document -> new StoredEntry<>(document.getString("key"), score(document)))
                 .into(new ArrayList<>()));
+    }
+
+    @Override
+    public Optional<StoredEntry<S>> entryBehind(StoredEntry<S> position, int offset) {
+        Bson filter = position == null ? live : and(live, or(lt("score", position.score()),
+                and(eq("score", position.score()), lt("key", position.key()))));
+        return execute(() -> Optional.ofNullable(collection.find(filter).sort(DESCENDING).skip(offset - 1).limit(1).projection(ENTRY_FIELDS)
+                .map(document -> new StoredEntry<>(document.getString("key"), score(document)))
+                .first()));
+    }
+
+    @Override
+    public long countBetween(StoredEntry<S> ahead, StoredEntry<S> behind) {
+        return execute(() -> collection.countDocuments(and(live, between(ahead, behind))));
     }
 
     @Override
@@ -136,6 +149,19 @@ final class MongoStorage<S> implements VersionedStorage<S> {
                         : new VersionedEntry<>(document.getString("key"), score(document), document.getLong("version")))
                 .into(new ArrayList<>()));
         return ScanPage.of(entries, count);
+    }
+
+    private static Bson between(StoredEntry<?> ahead, StoredEntry<?> behind) {
+        Object low = behind.score();
+        Bson lowEnd = and(eq("score", low), gt("key", behind.key()));
+        if (ahead == null) {
+            return or(gt("score", low), lowEnd);
+        }
+        Object high = ahead.score();
+        if (high.equals(low)) {
+            return and(eq("score", low), gt("key", behind.key()), lt("key", ahead.key()));
+        }
+        return or(and(eq("score", high), lt("key", ahead.key())), and(gt("score", low), lt("score", high)), lowEnd);
     }
 
     private Document liveEntry(String key) {
