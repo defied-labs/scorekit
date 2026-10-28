@@ -75,6 +75,8 @@ ScoreKit.builder()
 | `MongoStorageFactory(MongoDatabase)` | MongoDB only |
 | `CachedStorageFactory(cache, primary)` | a database as the source of truth, Redis as the read cache |
 
+`cached(false)` and `approximateRank(...)` in a provider's configuration choose, per provider, whether its leaderboards use the Redis cache and whether ranks are estimated. They are ignored by storages they do not apply to.
+
 No client library is bundled. Add the ones you use to your own build: `redis.clients:jedis` 8.x, `org.mongodb:mongodb-driver-sync` 5.x, or your JDBC driver.
 
 ### Database with a Redis cache
@@ -91,13 +93,50 @@ ScoreKit scoreKit = ScoreKit.builder()
 storage.close();
 ```
 
-Every write goes to the database first and then to Redis. Reads come from Redis. If the cache is cold, the request is answered by the database while the cache warms up in the background, and Redis stays out of the way for a few seconds after an error. Writes carry versions, so instances racing on the same key always converge, and a sweep every 10 seconds copies to Redis any change that did not reach it. `close()` stops the sweeps.
+Every write goes to the database first and then to Redis. Reads come from Redis. A leaderboard is copied to Redis the first time it is read: until then the request is answered by the database while the cache warms up in the background. Writes to leaderboards that nobody reads stay out of Redis. If Redis fails, it stays out of the way for a few seconds. Writes carry versions, so instances racing on the same key always converge, and a sweep every 10 seconds copies to Redis any change that did not reach it. `close()` stops the sweeps.
+
+The timings can be changed, and leaderboards that nobody reads for a while can be removed from Redis:
+
+```java
+CachedStorageFactory storage = CachedStorageFactory.builder(new RedisStorageFactory(jedis), new JdbcStorageFactory(dataSource))
+        .sweepInterval(Duration.ofSeconds(10))
+        .retryDelay(Duration.ofSeconds(5))
+        .evictIdleAfter(Duration.ofHours(1))
+        .build();
+```
+
+An evicted leaderboard is copied back on its next read.
 
 Requirements:
 
 - Redis 7.4 or newer (or Valkey 9), for per-field hash expiration.
 - An eviction policy that cannot drop ScoreKit keys: `noeviction` or one of the `volatile-*` policies.
 - Clocks on the application servers within 20 seconds of each other.
+
+### Very large leaderboards
+
+Redis answers `rank` in O(log N), but it holds a full copy of every cached leaderboard, roughly 100 bytes per entry. A database alone answers `rank` by counting the entries ahead, which is slow deep in a leaderboard of hundreds of millions.
+
+For those leaderboards a provider can stay out of Redis and estimate ranks instead:
+
+```java
+ScoreKit.builder()
+        .storage(storage)
+        .registerProvider(global, config -> config
+                .cached(false)
+                .approximateRank(new RankSampling(10_000, Duration.ofMinutes(10))))
+        .build();
+```
+
+Every 10 minutes, in the background, ScoreKit walks the ranking in the database and remembers the entry at every 10 000th position. `rank` then finds the nearest remembered entry ahead of the player and counts at most about 10 000 entries in the index, so it costs the same at position 10 or 500 000 000.
+
+- Ranks are exact until the leaderboard changes. After that, a rank is off by the number of entries that were added or removed ahead of the remembered entry since the last walk. Ranks ahead of the first remembered entry, about the first 10 000 positions, are always exact.
+- `top`, `score`, `put` and `remove` are not affected and stay exact.
+- Each walk reads the whole ranking index once, on every application instance that serves `rank` for that leaderboard. It only starts for leaderboards whose ranks are requested.
+- Until the first walk after a start finishes, ranks deeper than the part already walked are counted the slow way.
+- The remembered entries take memory in each instance: about 50 000 entries for 500 million players with the default interval.
+
+`approximateRank()` without arguments uses these defaults. With `cached(true)`, the default, ranks come from Redis and sampling only serves reads that fall back to the database.
 
 ### Relational databases
 
