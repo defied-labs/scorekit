@@ -65,6 +65,7 @@ public final class CachedStorageFactory implements StorageFactory, AutoCloseable
         private final VersionedStorageFactory primary;
         private Duration sweepInterval = CacheSettings.DEFAULT.sweepInterval();
         private Duration retryDelay = CacheSettings.DEFAULT.retryDelay();
+        private Duration idleTimeout = CacheSettings.DEFAULT.idleTimeout();
 
         private Builder(CacheStorageFactory cache, VersionedStorageFactory primary) {
             this.cache = cache;
@@ -87,8 +88,16 @@ public final class CachedStorageFactory implements StorageFactory, AutoCloseable
             return this;
         }
 
+        public Builder evictIdleAfter(Duration idle) {
+            if (idle.toMillis() < 1) {
+                throw new IllegalArgumentException("Idle timeout must be at least 1 ms: " + idle);
+            }
+            idleTimeout = idle;
+            return this;
+        }
+
         public CachedStorageFactory build() {
-            return new CachedStorageFactory(cache, primary, new CacheSettings(sweepInterval, retryDelay));
+            return new CachedStorageFactory(cache, primary, new CacheSettings(sweepInterval, retryDelay, idleTimeout));
         }
     }
 }

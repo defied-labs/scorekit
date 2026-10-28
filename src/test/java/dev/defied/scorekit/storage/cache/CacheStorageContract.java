@@ -10,7 +10,9 @@ import java.util.Optional;
 import java.util.OptionalLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public abstract class CacheStorageContract {
 
@@ -123,6 +125,42 @@ public abstract class CacheStorageContract {
         cache.putIfNewer("a", 2.0, 5);
 
         assertEquals(Optional.of(2.0), cache.score("a"));
+    }
+
+    @Test
+    void idleCacheIsEvicted() {
+        CacheStorage<Double> cache = warm(createCache(ScoreType.NUMERIC));
+        cache.putIfNewer("a", 1.0, 1);
+
+        assertFalse(cache.evictIfIdle(System.currentTimeMillis() - 60_000));
+        assertTrue(cache.evictIfIdle(System.currentTimeMillis() + 1));
+
+        assertFalse(cache.state().isWarm());
+        assertFalse(cache.evictIfIdle(System.currentTimeMillis() + 1));
+        assertEquals(0, warm(cache).size());
+    }
+
+    @Test
+    void touchedCacheIsKept() throws InterruptedException {
+        CacheStorage<Double> cache = warm(createCache(ScoreType.NUMERIC));
+        Thread.sleep(5);
+        long idleBefore = System.currentTimeMillis();
+
+        cache.state().touch();
+
+        assertFalse(cache.evictIfIdle(idleBefore));
+        assertTrue(cache.state().isWarm());
+    }
+
+    @Test
+    void evictedLexicographicCacheIsEmpty() {
+        CacheStorage<String> cache = warm(createCache(ScoreType.LEXICOGRAPHIC));
+        cache.putIfNewer("x", "apple", 1);
+
+        cache.evictIfIdle(System.currentTimeMillis() + 1);
+
+        assertEquals(List.of(), warm(cache).top(10));
+        assertEquals(0, cache.size());
     }
 
     @Test

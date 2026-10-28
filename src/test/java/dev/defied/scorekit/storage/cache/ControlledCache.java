@@ -67,6 +67,12 @@ final class ControlledCache<S> implements CacheStorage<S> {
     }
 
     @Override
+    public boolean evictIfIdle(long idleBeforeMillis) {
+        check();
+        return delegate.evictIfIdle(idleBeforeMillis);
+    }
+
+    @Override
     public CacheState state() {
         return delegate.state();
     }

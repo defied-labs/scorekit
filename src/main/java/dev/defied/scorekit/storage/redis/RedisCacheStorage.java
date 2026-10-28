@@ -29,6 +29,20 @@ abstract class RedisCacheStorage<S> implements CacheStorage<S> {
             end
             """;
 
+    private static final RedisScript EVICT = new RedisScript("""
+            if redis.call('HEXISTS', KEYS[1], 'warm') == 0 then
+                return 0
+            end
+            if tonumber(redis.call('HGET', KEYS[1], 'touched') or '0') >= tonumber(ARGV[1]) then
+                return 0
+            end
+            redis.call('HDEL', KEYS[1], 'warm', 'swept', 'touched')
+            for i = 2, #KEYS - 1 do
+                redis.call('UNLINK', KEYS[i])
+            end
+            return 1
+            """);
+
     private static final String COLD = "SCOREKIT_COLD";
     private static final String TOMBSTONE_TTL_MILLIS = "300000";
 
@@ -106,6 +120,11 @@ abstract class RedisCacheStorage<S> implements CacheStorage<S> {
     @Override
     public void clear() {
         jedis.unlink(keys.subList(1, keys.size() - 1).toArray(String[]::new));
+    }
+
+    @Override
+    public boolean evictIfIdle(long idleBeforeMillis) {
+        return (Long) EVICT.eval(jedis, keys, List.of(String.valueOf(idleBeforeMillis))) == 1;
     }
 
     @Override

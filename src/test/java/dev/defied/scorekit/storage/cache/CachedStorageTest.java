@@ -18,6 +18,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -160,7 +161,7 @@ class CachedStorageTest extends LeaderboardStorageContract {
 
     @Test
     void zeroRetryDelayRetriesTheCacheImmediately() {
-        CachedStorage<Double> eager = new CachedStorage<>(primary, cache, new CacheSettings(Duration.ofSeconds(10), Duration.ZERO));
+        CachedStorage<Double> eager = new CachedStorage<>(primary, cache, new CacheSettings(Duration.ofSeconds(10), Duration.ZERO, Duration.ZERO));
         eager.warmUp();
         cache.failing = true;
         eager.score("a");
@@ -173,12 +174,42 @@ class CachedStorageTest extends LeaderboardStorageContract {
     }
 
     @Test
+    void idleLeaderboardIsEvictedBySweep() throws InterruptedException {
+        CachedStorage<Double> evicting = evicting(Duration.ofMillis(50));
+        primary.put("a", 1.0);
+        evicting.warmUp();
+
+        Thread.sleep(60);
+        evicting.sweep();
+
+        assertFalse(cache.state().isWarm());
+        assertEquals(Optional.of(1.0), evicting.score("a"));
+        awaitWarm(evicting, cache.state());
+        assertEquals(Optional.of(1.0), cache.score("a"));
+    }
+
+    @Test
+    void readLeaderboardIsKept() throws InterruptedException {
+        CachedStorage<Double> evicting = evicting(Duration.ofMillis(200));
+        evicting.warmUp();
+
+        for (int i = 0; i < 5; i++) {
+            Thread.sleep(60);
+            evicting.size();
+            evicting.sweep();
+        }
+
+        assertTrue(cache.state().isWarm());
+    }
+
+    @Test
     void invalidSettingsAreRejected() {
         CachedStorageFactory.Builder builder = CachedStorageFactory.builder(memory, memory);
 
         assertThrows(IllegalArgumentException.class, () -> builder.sweepInterval(Duration.ZERO));
         assertThrows(IllegalArgumentException.class, () -> builder.sweepInterval(Duration.ofHours(1)));
         assertThrows(IllegalArgumentException.class, () -> builder.retryDelay(Duration.ofSeconds(-1)));
+        assertThrows(IllegalArgumentException.class, () -> builder.evictIdleAfter(Duration.ZERO));
     }
 
     @Test
@@ -189,6 +220,10 @@ class CachedStorageTest extends LeaderboardStorageContract {
         factory.close();
 
         assertThrows(IllegalStateException.class, () -> factory.create(ID, ScoreType.NUMERIC));
+    }
+
+    private CachedStorage<Double> evicting(Duration idle) {
+        return new CachedStorage<>(primary, cache, new CacheSettings(Duration.ofMillis(1), Duration.ofSeconds(5), idle));
     }
 
     static void awaitWarm(LeaderboardStorage<?> storage, CacheState state) throws InterruptedException {

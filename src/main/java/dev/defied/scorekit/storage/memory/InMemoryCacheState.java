@@ -11,6 +11,7 @@ final class InMemoryCacheState implements CacheState {
     private long warmingEpoch;
     private long watermark;
     private long nextSweepAt;
+    private long touchedAt;
 
     @Override
     public synchronized boolean isWarm() {
@@ -42,6 +43,7 @@ final class InMemoryCacheState implements CacheState {
         }
         warm = true;
         warmingEpoch = 0;
+        touchedAt = System.currentTimeMillis();
         this.watermark = watermark;
         return true;
     }
@@ -68,5 +70,19 @@ final class InMemoryCacheState implements CacheState {
         if (warm) {
             this.watermark = watermark;
         }
+    }
+
+    @Override
+    public synchronized void touch() {
+        touchedAt = System.currentTimeMillis();
+    }
+
+    synchronized boolean evictIfIdle(long idleBeforeMillis, Runnable clear) {
+        if (!warm || touchedAt >= idleBeforeMillis) {
+            return false;
+        }
+        warm = false;
+        clear.run();
+        return true;
     }
 }

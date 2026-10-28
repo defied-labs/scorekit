@@ -17,4 +17,6 @@ public interface CacheState {
     OptionalLong tryStartSweep(long intervalMillis);
 
     void completeSweep(long watermark);
+
+    void touch();
 }

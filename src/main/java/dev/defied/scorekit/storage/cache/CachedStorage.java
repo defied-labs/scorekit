@@ -27,6 +27,7 @@ final class CachedStorage<S> implements LeaderboardStorage<S> {
     private final AtomicBoolean warming = new AtomicBoolean();
     private final AtomicBoolean sweeping = new AtomicBoolean();
     private volatile long unavailableUntil;
+    private volatile long nextTouch;
 
     CachedStorage(VersionedStorage<S> primary, CacheStorage<S> cache, CacheSettings settings) {
         this.primary = primary;
@@ -97,7 +98,7 @@ final class CachedStorage<S> implements LeaderboardStorage<S> {
 
     void sweep() {
         OptionalLong watermark = state.tryStartSweep(settings.sweepInterval().toMillis());
-        if (watermark.isEmpty()) {
+        if (watermark.isEmpty() || evictIfIdle()) {
             return;
         }
         long next = VersionedStorage.now() - SWEEP_MARGIN_MICROS;
@@ -129,7 +130,9 @@ final class CachedStorage<S> implements LeaderboardStorage<S> {
     private <T> T read(Supplier<T> fromCache, Supplier<T> fromPrimary) {
         if (!unavailable()) {
             try {
-                return fromCache.get();
+                T value = fromCache.get();
+                touch();
+                return value;
             } catch (CacheColdException e) {
                 inBackground(warming, "scorekit-cache-warm-up", this::warmUp);
             } catch (RuntimeException e) {
@@ -137,6 +140,20 @@ final class CachedStorage<S> implements LeaderboardStorage<S> {
             }
         }
         return fromPrimary.get();
+    }
+
+    private boolean evictIfIdle() {
+        long idle = settings.idleTimeout().toMillis();
+        return idle > 0 && cache.evictIfIdle(System.currentTimeMillis() - idle);
+    }
+
+    private void touch() {
+        long idle = settings.idleTimeout().toMillis();
+        long now = System.currentTimeMillis();
+        if (idle > 0 && now >= nextTouch) {
+            nextTouch = now + idle / 4;
+            state.touch();
+        }
     }
 
     private boolean unavailable() {

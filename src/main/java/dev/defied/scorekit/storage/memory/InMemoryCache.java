@@ -78,6 +78,11 @@ final class InMemoryCache<S> implements CacheStorage<S> {
     }
 
     @Override
+    public boolean evictIfIdle(long idleBeforeMillis) {
+        return state.evictIfIdle(idleBeforeMillis, storage::clear);
+    }
+
+    @Override
     public CacheState state() {
         return state;
     }

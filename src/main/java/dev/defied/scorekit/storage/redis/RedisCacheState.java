@@ -33,7 +33,7 @@ final class RedisCacheState implements CacheState {
             if redis.call('GET', KEYS[2]) ~= ARGV[1] then
                 return 0
             end
-            redis.call('HSET', KEYS[1], 'warm', '1', 'swept', ARGV[2])
+            redis.call('HSET', KEYS[1], 'warm', '1', 'swept', ARGV[2], 'touched', ARGV[3])
             redis.call('DEL', KEYS[2])
             return 1
             """);
@@ -90,7 +90,8 @@ final class RedisCacheState implements CacheState {
 
     @Override
     public boolean completeWarmUp(long epoch, long watermark) {
-        return (Long) COMPLETE.eval(jedis, keys, List.of(String.valueOf(epoch), String.valueOf(watermark))) == 1;
+        List<String> args = List.of(String.valueOf(epoch), String.valueOf(watermark), String.valueOf(System.currentTimeMillis()));
+        return (Long) COMPLETE.eval(jedis, keys, args) == 1;
     }
 
     @Override
@@ -107,5 +108,10 @@ final class RedisCacheState implements CacheState {
     @Override
     public void completeSweep(long watermark) {
         COMPLETE_SWEEP.eval(jedis, keys, List.of(String.valueOf(watermark)));
+    }
+
+    @Override
+    public void touch() {
+        jedis.hset(stateKey, "touched", String.valueOf(System.currentTimeMillis()));
     }
 }

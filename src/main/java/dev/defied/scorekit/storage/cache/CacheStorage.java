@@ -25,5 +25,7 @@ public interface CacheStorage<S> {
 
     void clear();
 
+    boolean evictIfIdle(long idleBeforeMillis);
+
     CacheState state();
 }
