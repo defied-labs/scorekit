@@ -3,6 +3,7 @@ package dev.defied.scorekit.storage;
 import dev.defied.scorekit.codec.ScoreType;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -135,6 +136,34 @@ public abstract class VersionedStorageContract extends LeaderboardStorageContrac
         assertEquals(Optional.of(new StoredEntry<>("y", "banana")), lex.entryBehind(new StoredEntry<>("z", "cherry"), 1));
         assertEquals(1, lex.countBetween(new StoredEntry<>("z", "cherry"), new StoredEntry<>("x", "apple")));
         assertEquals(2, lex.countBetween(null, new StoredEntry<>("x", "apple")));
+    }
+
+    @Test
+    void sampledRanksMatchExactRanksWithoutChanges() {
+        VersionedStorage<Double> storage = create(ScoreType.NUMERIC);
+        for (int i = 0; i < 200; i++) {
+            storage.put("k" + i, (double) (i % 13));
+        }
+        SampledRankStorage<Double> sampled = new SampledRankStorage<>(storage, ScoreType.NUMERIC, new RankSampling(7, Duration.ofHours(1)));
+        sampled.resample();
+
+        for (int i = 0; i < 200; i++) {
+            assertEquals(storage.rank("k" + i), sampled.rank("k" + i));
+        }
+    }
+
+    @Test
+    void sampledLexicographicRanksMatchExactRanks() {
+        VersionedStorage<String> lex = create(ScoreType.LEXICOGRAPHIC);
+        for (int i = 0; i < 40; i++) {
+            lex.put("k" + i, "s" + (i % 6));
+        }
+        SampledRankStorage<String> sampled = new SampledRankStorage<>(lex, ScoreType.LEXICOGRAPHIC, new RankSampling(4, Duration.ofHours(1)));
+        sampled.resample();
+
+        for (int i = 0; i < 40; i++) {
+            assertEquals(lex.rank("k" + i), sampled.rank("k" + i));
+        }
     }
 
     private VersionedStorage<Double> ranked() {

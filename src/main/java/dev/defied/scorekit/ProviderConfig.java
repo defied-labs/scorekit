@@ -4,6 +4,7 @@ import dev.defied.scorekit.codec.EvaluationCriteria;
 import dev.defied.scorekit.codec.KeyCodec;
 import dev.defied.scorekit.codec.KeyCodecs;
 import dev.defied.scorekit.codec.ScoreCodec;
+import dev.defied.scorekit.storage.RankSampling;
 import dev.defied.scorekit.storage.StorageSettings;
 
 import java.lang.reflect.ParameterizedType;
@@ -30,6 +31,7 @@ public final class ProviderConfig<K, V> {
     private KeyCodec<K> keyCodec;
     private ScoreCodec<V, ?> scoreCodec;
     private boolean cached = true;
+    private RankSampling rankSampling;
 
     @SuppressWarnings("unchecked")
     ProviderConfig(ScoreProvider<K, V> provider) {
@@ -56,6 +58,15 @@ public final class ProviderConfig<K, V> {
         return this;
     }
 
+    public ProviderConfig<K, V> approximateRank() {
+        return approximateRank(RankSampling.DEFAULT);
+    }
+
+    public ProviderConfig<K, V> approximateRank(RankSampling sampling) {
+        rankSampling = Objects.requireNonNull(sampling, "sampling");
+        return this;
+    }
+
     ScoreProvider<K, V> provider() {
         return provider;
     }
@@ -69,7 +80,7 @@ public final class ProviderConfig<K, V> {
     }
 
     StorageSettings storageSettings() {
-        return new StorageSettings(cached);
+        return new StorageSettings(cached, rankSampling);
     }
 
     void validate() {

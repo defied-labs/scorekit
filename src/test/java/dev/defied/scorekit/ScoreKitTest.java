@@ -6,6 +6,7 @@ import dev.defied.scorekit.codec.ScoreCodec;
 import dev.defied.scorekit.codec.ScoreType;
 import dev.defied.scorekit.storage.LeaderboardId;
 import dev.defied.scorekit.storage.LeaderboardStorage;
+import dev.defied.scorekit.storage.RankSampling;
 import dev.defied.scorekit.storage.StorageFactory;
 import dev.defied.scorekit.storage.StorageSettings;
 import dev.defied.scorekit.storage.memory.InMemoryStorage;
@@ -149,13 +150,13 @@ class ScoreKitTest {
         ScoreKit scoreKit = ScoreKit.builder()
                 .storage(capturing)
                 .registerProvider(pizza, provider -> provider.cached(false))
-                .registerProvider(arcade, provider -> provider.evaluationCriteria(PLAY_TIME))
+                .registerProvider(arcade, provider -> provider.evaluationCriteria(PLAY_TIME).approximateRank())
                 .build();
 
         scoreKit.leaderboard(pizza, "weekly");
         scoreKit.leaderboard(arcade, "weekly");
 
-        assertEquals(List.of(new StorageSettings(false), StorageSettings.DEFAULT), received);
+        assertEquals(List.of(new StorageSettings(false, null), new StorageSettings(true, RankSampling.DEFAULT)), received);
     }
 
     @Test

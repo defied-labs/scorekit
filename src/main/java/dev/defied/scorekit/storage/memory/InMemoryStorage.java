@@ -36,9 +36,7 @@ public final class InMemoryStorage<S> implements VersionedStorage<S> {
     private final Lock writeLock;
 
     public InMemoryStorage(ScoreType<S> type) {
-        Comparator<StoredEntry<S>> ascending = Comparator.comparing(StoredEntry<S>::score, type.order())
-                .thenComparing(StoredEntry::key, KEY_ORDER);
-        ranking = new TreeSet<>(ascending.reversed());
+        ranking = new TreeSet<>(StoredEntry.ranking(type));
         ReadWriteLock lock = new ReentrantReadWriteLock();
         readLock = lock.readLock();
         writeLock = lock.writeLock();

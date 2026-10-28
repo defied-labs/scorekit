@@ -97,7 +97,7 @@ class RedisJdbcCachedStorageTest extends LeaderboardStorageContract {
     @Test
     void uncachedLeaderboardsStayOutOfRedis() {
         LeaderboardId id = new LeaderboardId("test", UUID.randomUUID().toString());
-        LeaderboardStorage<Double> storage = factory.create(id, ScoreType.NUMERIC, new StorageSettings(false));
+        LeaderboardStorage<Double> storage = factory.create(id, ScoreType.NUMERIC, new StorageSettings(false, null));
 
         storage.put("a", 1.0);
 
