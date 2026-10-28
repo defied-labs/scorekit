@@ -29,7 +29,7 @@ class CachedStorageTest extends LeaderboardStorageContract {
     private final InMemoryStorageFactory memory = new InMemoryStorageFactory();
     private final ControlledPrimary<Double> primary = new ControlledPrimary<>(new InMemoryStorage<>(ScoreType.NUMERIC));
     private final ControlledCache<Double> cache = new ControlledCache<>(memory.createCache(ID, ScoreType.NUMERIC));
-    private final CachedStorage<Double> cached = new CachedStorage<>(primary, cache);
+    private final CachedStorage<Double> cached = new CachedStorage<>(primary, cache, CacheSettings.DEFAULT);
 
     @Override
     protected <S> LeaderboardStorage<S> create(ScoreType<S> type) {
@@ -87,7 +87,7 @@ class CachedStorageTest extends LeaderboardStorageContract {
 
     @Test
     void concurrentWritersFromSeveralInstancesConverge() throws Exception {
-        List<CachedStorage<Double>> instances = List.of(cached, new CachedStorage<>(primary, cache));
+        List<CachedStorage<Double>> instances = List.of(cached, new CachedStorage<>(primary, cache, CacheSettings.DEFAULT));
         cached.warmUp();
 
         Parallel.run(8, () -> {
@@ -156,6 +156,29 @@ class CachedStorageTest extends LeaderboardStorageContract {
 
         assertEquals(calls, cache.calls.get());
         assertEquals(Optional.of(1.0), cached.score("a"));
+    }
+
+    @Test
+    void zeroRetryDelayRetriesTheCacheImmediately() {
+        CachedStorage<Double> eager = new CachedStorage<>(primary, cache, new CacheSettings(Duration.ofSeconds(10), Duration.ZERO));
+        eager.warmUp();
+        cache.failing = true;
+        eager.score("a");
+        cache.failing = false;
+        int calls = cache.calls.get();
+
+        eager.score("a");
+
+        assertEquals(calls + 1, cache.calls.get());
+    }
+
+    @Test
+    void invalidSettingsAreRejected() {
+        CachedStorageFactory.Builder builder = CachedStorageFactory.builder(memory, memory);
+
+        assertThrows(IllegalArgumentException.class, () -> builder.sweepInterval(Duration.ZERO));
+        assertThrows(IllegalArgumentException.class, () -> builder.sweepInterval(Duration.ofHours(1)));
+        assertThrows(IllegalArgumentException.class, () -> builder.retryDelay(Duration.ofSeconds(-1)));
     }
 
     @Test

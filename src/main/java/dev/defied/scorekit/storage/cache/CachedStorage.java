@@ -15,25 +15,24 @@ import static java.lang.System.Logger.Level.WARNING;
 
 final class CachedStorage<S> implements LeaderboardStorage<S> {
 
-    static final long SWEEP_INTERVAL_MILLIS = 10_000;
-
     private static final int BATCH = 500;
     private static final long SWEEP_MARGIN_MICROS = 20_000_000;
     private static final long TOMBSTONE_RETENTION_MICROS = 3_600_000_000L;
-    private static final long UNAVAILABLE_BACKOFF_MILLIS = 5_000;
     private static final System.Logger LOGGER = System.getLogger(CachedStorage.class.getName());
 
     private final VersionedStorage<S> primary;
     private final CacheStorage<S> cache;
     private final CacheState state;
+    private final CacheSettings settings;
     private final AtomicBoolean warming = new AtomicBoolean();
     private final AtomicBoolean sweeping = new AtomicBoolean();
     private volatile long unavailableUntil;
 
-    CachedStorage(VersionedStorage<S> primary, CacheStorage<S> cache) {
+    CachedStorage(VersionedStorage<S> primary, CacheStorage<S> cache, CacheSettings settings) {
         this.primary = primary;
         this.cache = cache;
         this.state = cache.state();
+        this.settings = settings;
     }
 
     @Override
@@ -97,7 +96,7 @@ final class CachedStorage<S> implements LeaderboardStorage<S> {
     }
 
     void sweep() {
-        OptionalLong watermark = state.tryStartSweep(SWEEP_INTERVAL_MILLIS);
+        OptionalLong watermark = state.tryStartSweep(settings.sweepInterval().toMillis());
         if (watermark.isEmpty()) {
             return;
         }
@@ -145,7 +144,7 @@ final class CachedStorage<S> implements LeaderboardStorage<S> {
     }
 
     private void markUnavailable(String message, RuntimeException e) {
-        unavailableUntil = System.currentTimeMillis() + UNAVAILABLE_BACKOFF_MILLIS;
+        unavailableUntil = System.currentTimeMillis() + settings.retryDelay().toMillis();
         LOGGER.log(WARNING, message, e);
     }
 
