@@ -4,6 +4,8 @@ import dev.defied.scorekit.codec.ScoreType;
 import dev.defied.scorekit.storage.LeaderboardId;
 import dev.defied.scorekit.storage.LeaderboardStorage;
 import dev.defied.scorekit.storage.StorageFactory;
+import dev.defied.scorekit.storage.StorageSettings;
+import dev.defied.scorekit.storage.VersionedStorage;
 import dev.defied.scorekit.storage.VersionedStorageFactory;
 
 import java.time.Duration;
@@ -23,7 +25,7 @@ public final class CachedStorageFactory implements StorageFactory, AutoCloseable
 
     private final CacheStorageFactory cache;
     private final VersionedStorageFactory primary;
-    private final CacheSettings settings;
+    private final CacheSettings cacheSettings;
     private final List<ScheduledFuture<?>> sweeps = new ArrayList<>();
     private boolean closed;
 
@@ -31,10 +33,10 @@ public final class CachedStorageFactory implements StorageFactory, AutoCloseable
         this(cache, primary, CacheSettings.DEFAULT);
     }
 
-    private CachedStorageFactory(CacheStorageFactory cache, VersionedStorageFactory primary, CacheSettings settings) {
+    private CachedStorageFactory(CacheStorageFactory cache, VersionedStorageFactory primary, CacheSettings cacheSettings) {
         this.cache = Objects.requireNonNull(cache, "cache");
         this.primary = Objects.requireNonNull(primary, "primary");
-        this.settings = settings;
+        this.cacheSettings = cacheSettings;
     }
 
     public static Builder builder(CacheStorageFactory cache, VersionedStorageFactory primary) {
@@ -42,12 +44,21 @@ public final class CachedStorageFactory implements StorageFactory, AutoCloseable
     }
 
     @Override
-    public synchronized <S> LeaderboardStorage<S> create(LeaderboardId id, ScoreType<S> type) {
+    public <S> LeaderboardStorage<S> create(LeaderboardId id, ScoreType<S> type) {
+        return create(id, type, StorageSettings.DEFAULT);
+    }
+
+    @Override
+    public synchronized <S> LeaderboardStorage<S> create(LeaderboardId id, ScoreType<S> type, StorageSettings settings) {
         if (closed) {
             throw new IllegalStateException("Storage factory is closed");
         }
-        CachedStorage<S> storage = new CachedStorage<>(primary.create(id, type), cache.createCache(id, type), settings);
-        long interval = settings.sweepInterval().toMillis();
+        VersionedStorage<S> stored = primary.create(id, type, settings);
+        if (!settings.cached()) {
+            return stored;
+        }
+        CachedStorage<S> storage = new CachedStorage<>(stored, cache.createCache(id, type), cacheSettings);
+        long interval = cacheSettings.sweepInterval().toMillis();
         sweeps.add(SWEEPER.scheduleWithFixedDelay(storage::sweepInBackground, interval, interval, TimeUnit.MILLISECONDS));
         return storage;
     }

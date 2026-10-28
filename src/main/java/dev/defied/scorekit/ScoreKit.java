@@ -4,6 +4,7 @@ import dev.defied.scorekit.codec.KeyCodec;
 import dev.defied.scorekit.codec.ScoreCodec;
 import dev.defied.scorekit.storage.LeaderboardId;
 import dev.defied.scorekit.storage.StorageFactory;
+import dev.defied.scorekit.storage.StorageSettings;
 import dev.defied.scorekit.storage.memory.InMemoryStorageFactory;
 
 import java.util.HashMap;
@@ -35,11 +36,11 @@ public final class ScoreKit {
         }
         ProviderConfig<K, V> config = (ProviderConfig<K, V>) registered;
         LeaderboardId id = new LeaderboardId(provider.name(), requireName(name, "Leaderboard"));
-        return (Leaderboard<K, V>) leaderboards.computeIfAbsent(id, key -> create(key, config.keyCodec(), config.scoreCodec()));
+        return (Leaderboard<K, V>) leaderboards.computeIfAbsent(id, key -> create(key, config.keyCodec(), config.scoreCodec(), config.storageSettings()));
     }
 
-    private <K, V, S> Leaderboard<K, V> create(LeaderboardId id, KeyCodec<K> keyCodec, ScoreCodec<V, S> scoreCodec) {
-        return new StoredLeaderboard<>(id.leaderboard(), keyCodec, scoreCodec, storageFactory.create(id, scoreCodec.type()));
+    private <K, V, S> Leaderboard<K, V> create(LeaderboardId id, KeyCodec<K> keyCodec, ScoreCodec<V, S> scoreCodec, StorageSettings settings) {
+        return new StoredLeaderboard<>(id.leaderboard(), keyCodec, scoreCodec, storageFactory.create(id, scoreCodec.type(), settings));
     }
 
     private static String requireName(String name, String owner) {

@@ -4,8 +4,14 @@ import dev.defied.scorekit.codec.EvaluationCriteria;
 import dev.defied.scorekit.codec.KeyCodecs;
 import dev.defied.scorekit.codec.ScoreCodec;
 import dev.defied.scorekit.codec.ScoreType;
+import dev.defied.scorekit.storage.LeaderboardId;
+import dev.defied.scorekit.storage.LeaderboardStorage;
+import dev.defied.scorekit.storage.StorageFactory;
+import dev.defied.scorekit.storage.StorageSettings;
+import dev.defied.scorekit.storage.memory.InMemoryStorage;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -121,6 +127,35 @@ class ScoreKitTest {
         ScoreKit.Builder builder = ScoreKit.builder().registerProvider(new PizzaEaterProvider());
 
         assertThrows(IllegalArgumentException.class, () -> builder.registerProvider(new PizzaEaterProvider()));
+    }
+
+    @Test
+    void providerSettingsReachTheStorage() {
+        List<StorageSettings> received = new ArrayList<>();
+        StorageFactory capturing = new StorageFactory() {
+            @Override
+            public <S> LeaderboardStorage<S> create(LeaderboardId id, ScoreType<S> type) {
+                return create(id, type, StorageSettings.DEFAULT);
+            }
+
+            @Override
+            public <S> LeaderboardStorage<S> create(LeaderboardId id, ScoreType<S> type, StorageSettings settings) {
+                received.add(settings);
+                return new InMemoryStorage<>(type);
+            }
+        };
+        PizzaEaterProvider pizza = new PizzaEaterProvider();
+        ArcadeProvider arcade = new ArcadeProvider();
+        ScoreKit scoreKit = ScoreKit.builder()
+                .storage(capturing)
+                .registerProvider(pizza, provider -> provider.cached(false))
+                .registerProvider(arcade, provider -> provider.evaluationCriteria(PLAY_TIME))
+                .build();
+
+        scoreKit.leaderboard(pizza, "weekly");
+        scoreKit.leaderboard(arcade, "weekly");
+
+        assertEquals(List.of(new StorageSettings(false), StorageSettings.DEFAULT), received);
     }
 
     @Test

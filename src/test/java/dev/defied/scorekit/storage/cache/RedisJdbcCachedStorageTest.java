@@ -6,6 +6,7 @@ import dev.defied.scorekit.storage.LeaderboardId;
 import dev.defied.scorekit.storage.LeaderboardStorage;
 import dev.defied.scorekit.storage.LeaderboardStorageContract;
 import dev.defied.scorekit.storage.Parallel;
+import dev.defied.scorekit.storage.StorageSettings;
 import dev.defied.scorekit.storage.jdbc.JdbcStorageFactory;
 import dev.defied.scorekit.storage.redis.RedisStorageFactory;
 import org.junit.jupiter.api.AfterAll;
@@ -19,6 +20,7 @@ import redis.clients.jedis.RedisClient;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -90,6 +92,18 @@ class RedisJdbcCachedStorageTest extends LeaderboardStorageContract {
         CacheStorage<Double> cache = redisFactory.createCache(id, ScoreType.NUMERIC);
         CachedStorageTest.awaitWarm(instances.getFirst(), cache.state());
         assertEquals(jdbcFactory.create(id, ScoreType.NUMERIC).top(Integer.MAX_VALUE), cache.top(Integer.MAX_VALUE));
+    }
+
+    @Test
+    void uncachedLeaderboardsStayOutOfRedis() {
+        LeaderboardId id = new LeaderboardId("test", UUID.randomUUID().toString());
+        LeaderboardStorage<Double> storage = factory.create(id, ScoreType.NUMERIC, new StorageSettings(false));
+
+        storage.put("a", 1.0);
+
+        assertEquals(Optional.of(1.0), storage.score("a"));
+        assertEquals(Optional.of(1.0), jdbcFactory.create(id, ScoreType.NUMERIC).score("a"));
+        assertEquals(Set.of(), jedis.keys("scorekit:{test:" + id.leaderboard() + "}:*"));
     }
 
     @Test

@@ -6,4 +6,9 @@ public interface VersionedStorageFactory extends StorageFactory {
 
     @Override
     <S> VersionedStorage<S> create(LeaderboardId id, ScoreType<S> type);
+
+    @Override
+    default <S> VersionedStorage<S> create(LeaderboardId id, ScoreType<S> type, StorageSettings settings) {
+        return create(id, type);
+    }
 }
